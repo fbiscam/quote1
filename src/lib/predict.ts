@@ -78,8 +78,15 @@ export type HeavySignal = {
   advice: "TRADE" | "WAIT";
   /** tuned |score| threshold required for a tradeable call */
   threshold: number;
+  /** consistency of accuracy across short + long validation windows (0-100) */
+  stability: number;
+  /** accuracy of an independent short validation window (%) */
+  shortWindowAccuracy: number | null;
+  /** historical analog (kNN) match result for the current setup */
+  analog: { prob: number | null; matches: number };
   agreement: number;
   markov: { prob: number | null; samples: number };
+
   extras: {
     adx: number | null;
     plusDI: number | null;
