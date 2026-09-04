@@ -9,7 +9,7 @@ import { CandleCountdown } from "@/components/CandleCountdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ema } from "@/lib/indicators";
-import { fetchGoldCandles } from "@/lib/gold.functions";
+import { fetchGoldCandles, fetchGoldSpot } from "@/lib/gold.functions";
 import { aiReviewSignal } from "@/lib/ai-review.functions";
 import { predict } from "@/lib/predict";
 import { cn } from "@/lib/utils";
@@ -73,6 +73,15 @@ function Dashboard() {
   const active = results[0]!;
   const { isLoading, isError, error, isFetching, dataUpdatedAt } = active;
   const refetch = () => results.forEach((r) => r.refetch());
+
+  // Live spot price (display) — analysis sirf closed candles par hota hai.
+  const getSpot = useServerFn(fetchGoldSpot);
+  const spotQuery = useQuery({
+    queryKey: ["xauusd-spot"],
+    queryFn: () => getSpot({}),
+    refetchInterval: 15_000,
+  });
+  const spot = spotQuery.data?.price ?? null;
 
   const htfData = results[1]?.data;
   const candles = useMemo(() => active.data ?? [], [active.data]);
@@ -202,8 +211,11 @@ function Dashboard() {
       <section className="panel overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-4">
           <div>
-            <p className="text-xs uppercase tracking-widest text-muted-foreground">XAU/USD (live spot · MT5 aligned)</p>
-            <p className="tick text-2xl font-semibold">{last ? fmt(last.close) : "—"}</p>
+            <p className="text-xs uppercase tracking-widest text-muted-foreground">XAU/USD live spot (MT5 aligned)</p>
+            <p className="tick text-2xl font-semibold">{spot != null ? fmt(spot) : last ? fmt(last.close) : "—"}</p>
+            <p className="tick mt-1 text-[11px] text-muted-foreground">
+              Analysis last CLOSED candle par: {last ? new Date(last.openTime).toLocaleTimeString() : "—"} · close {fmt(last?.close)}
+            </p>
           </div>
           <div className="flex items-center gap-4">
             <span className={cn("tick text-sm", changePct >= 0 ? "text-bull" : "text-bear")}>
