@@ -2,13 +2,14 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useMemo, useState } from "react";
-import { Activity, ArrowDownRight, ArrowUpRight, Minus, RefreshCw, TriangleAlert } from "lucide-react";
+import { Activity, ArrowDownRight, ArrowUpRight, Bot, Minus, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { CandleChart } from "@/components/CandleChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ema } from "@/lib/indicators";
 import { fetchGoldCandles } from "@/lib/gold.functions";
+import { aiReviewSignal } from "@/lib/ai-review.functions";
 import { predict } from "@/lib/predict";
 import { cn } from "@/lib/utils";
 
