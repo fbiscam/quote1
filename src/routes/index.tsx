@@ -109,7 +109,7 @@ function Dashboard() {
       <section className="panel overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-4">
           <div>
-            <p className="text-xs uppercase tracking-widest text-muted-foreground">XAU/USD (Gold spot proxy)</p>
+            <p className="text-xs uppercase tracking-widest text-muted-foreground">XAU/USD (live spot · MT5 aligned)</p>
             <p className="tick text-2xl font-semibold">{last ? fmt(last.close) : "—"}</p>
           </div>
           <div className="flex items-center gap-4">
