@@ -31,7 +31,15 @@ export const fetchGoldCandles = createServerFn({ method: "GET" })
       if (closed.length >= 60) return closed.slice(-300);
     }
 
-    // 2) Fallback: Yahoo GC=F + spot calibration
+    // 2) Real-time gold proxy: PAXG/USDT (1 PAXG = 1 oz gold, 24/7 live, no delay).
+    //    Yahoo GC=F ~10 min delayed hota hai, is liye ye primary hai.
+    const px = await fetchPaxg(data.interval);
+    if (px) {
+      const closed = onlyClosed(px, data.interval);
+      if (closed.length >= 60) return calibrate(closed.slice(-300), await fetchSpot());
+    }
+
+    // 3) Fallback: Yahoo GC=F + spot calibration
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=${YF_INTERVAL[data.interval]}&range=${RANGE[data.interval]}`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
     if (!res.ok) throw new Error(`Gold data load nahi hua (${res.status})`);
@@ -82,21 +90,51 @@ export const fetchGoldCandles = createServerFn({ method: "GET" })
     // Structure futures se lete hain, levels ko live spot (MT5 jaisa) par calibrate karte hain.
     // NOTE: last candle ka close overwrite NAHI karte — warna fake bada body ban jata hai
     // aur pattern/momentum signals galat ho jate hain.
-    const spot = await fetchSpot();
-    const last = candles[candles.length - 1];
-    if (spot != null && last) {
-      const offset = spot - last.close;
-      if (Math.abs(offset) < 200) {
-        for (const c of candles) {
-          c.open += offset;
-          c.high += offset;
-          c.low += offset;
-          c.close += offset;
-        }
-      }
-    }
-    return candles;
+    return calibrate(candles, await fetchSpot());
   });
+
+/** Candle structure rakh kar levels ko live spot par shift karta hai. */
+function calibrate(candles: Candle[], spot: number | null): Candle[] {
+  const last = candles[candles.length - 1];
+  if (spot == null || !last) return candles;
+  const offset = spot - last.close;
+  if (Math.abs(offset) >= 200) return candles;
+  for (const c of candles) {
+    c.open += offset;
+    c.high += offset;
+    c.low += offset;
+    c.close += offset;
+  }
+  return candles;
+}
+
+/** PAXG/USDT klines — real-time gold ounce proxy. */
+async function fetchPaxg(interval: string): Promise<Candle[] | null> {
+  try {
+    const res = await fetch(
+      `https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${interval}&limit=500`,
+      { headers: { "User-Agent": "Mozilla/5.0" } },
+    );
+    if (!res.ok) return null;
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows)) return null;
+    const out: Candle[] = [];
+    for (const r of rows) {
+      if (!Array.isArray(r)) continue;
+      const openTime = Number(r[0]);
+      const open = Number(r[1]);
+      const high = Number(r[2]);
+      const low = Number(r[3]);
+      const close = Number(r[4]);
+      const volume = Number(r[5]);
+      if (![openTime, open, high, low, close].every(Number.isFinite)) continue;
+      out.push({ openTime, closeTime: Number(r[6]) || openTime, open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 });
+    }
+    return out.length ? out : null;
+  } catch {
+    return null;
+  }
+}
 
 const INTERVAL_MS: Record<string, number> = {
   "1m": 60_000,
