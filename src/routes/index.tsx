@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Activity, ArrowDownRight, ArrowUpRight, Bot, Minus, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { CandleChart } from "@/components/CandleChart";
@@ -190,17 +190,20 @@ function Dashboard() {
         </Button>
       </header>
 
-      <div className="flex flex-wrap gap-2">
-        {INTERVALS.map((i) => (
-          <Button
-            key={i.value}
-            size="sm"
-            variant={interval === i.value ? "default" : "outline"}
-            onClick={() => setInterval(i.value)}
-            className="tick"
+      <div className="panel flex flex-wrap items-center gap-3 px-5 py-4">
+        <span className="text-xs uppercase tracking-widest text-muted-foreground">Auto-selected best timeframe</span>
+        {scored.map((s) => (
+          <span
+            key={s.interval}
+            className={cn(
+              "tick rounded-md border px-2.5 py-1 text-xs",
+              s.interval === interval
+                ? "border-primary bg-primary/15 text-primary"
+                : "border-border text-muted-foreground opacity-60",
+            )}
           >
-            {i.label}
-          </Button>
+            {s.label} · {s.accuracy.toFixed(1)}%
+          </span>
         ))}
       </div>
 
