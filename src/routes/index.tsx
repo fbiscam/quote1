@@ -183,7 +183,7 @@ function Dashboard() {
           <p className="tick text-xs uppercase tracking-[0.28em] text-primary">XAU / USD · Gold</p>
           <h1 className="mt-1 text-3xl font-semibold md:text-4xl">Next Candle Prediction Engine</h1>
           <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-            Sirf Gold (XAU/USD). 20+ factors (EMA, RSI, MACD, ADX/DI, Ichimoku, VWAP, CCI, %R, OBV, Markov, patterns) ka adaptive-weighted ensemble agli candle ka direction, expected
+            Sirf Gold (XAU/USD). 30+ detection skills (EMA stack/slope, RSI divergence, BB squeeze breakout, fractal breakout, S/R bounce, wick pressure, streak exhaustion, gap fill, session momentum, ADX/DI, Ichimoku, VWAP, OBV, Markov, patterns) ka adaptive-weighted ensemble agli candle ka direction, expected
             open/high/low/close aur probability batata hai — saath me live backtest accuracy.
           </p>
         </div>
