@@ -189,8 +189,8 @@ export function analyze(candles: Candle[]): Signal {
   }
 
   const total = reasons.reduce((s, x) => s + x.score, 0);
-  const maxAbs = reasons.reduce((s, x) => s + Math.abs(x.score), 0) || 1;
-  const confidence = Math.min(95, Math.round((Math.abs(total) / maxAbs) * 100));
+  const evidence = Math.max(6, reasons.reduce((s, x) => s + Math.abs(x.score), 0));
+  const confidence = Math.min(95, Math.round((Math.abs(total) / evidence) * 100));
 
   let direction: Signal["direction"] = "WAIT";
   if (total >= 3 && confidence >= 45) direction = "UP";
