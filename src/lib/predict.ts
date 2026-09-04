@@ -789,7 +789,9 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
   const price = ctx.closes[i]!;
 
   const fv = makeFactorCache(ctx);
-  const { bt, rates, threshold } = walkForward(ctx, fv, 320);
+  const { bt, rates, threshold, stability, shortAcc } = walkForward(ctx, fv, 320);
+  const analog = analogProbability(ctx, i);
+
   const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
   const { score, factors, agreement } = scoreFrom(factorValues(ctx, i, htfBias), rates);
 
