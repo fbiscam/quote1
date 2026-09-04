@@ -215,6 +215,7 @@ function Dashboard() {
               <span className="flex items-center gap-1.5">
                 <span className="inline-block h-0.5 w-4 border-t border-dashed border-current" /> Next candle
               </span>
+              <CandleCountdown interval={interval} lastOpenTime={last?.openTime} compact />
             </div>
           </div>
         </div>
