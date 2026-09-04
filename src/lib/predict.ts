@@ -551,24 +551,42 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
   const i = candles.length - 1;
   const price = ctx.closes[i]!;
 
-  const rates = factorHitRates(ctx, 150);
+  const fv = makeFactorCache(ctx);
+  const { bt, rates, threshold } = walkForward(ctx, fv, 320);
   const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
   const { score, factors, agreement } = scoreFrom(factorValues(ctx, i, htfBias), rates);
 
   const base = analyze(candles);
-  const bt = backtest(ctx, rates, 120);
   const regime = detectRegime(ctx, i);
   const mk = markovUpProbability(candles, 2);
 
   const a = ctx.atr[i] ?? price * 0.001;
   const strength = Math.min(1, Math.abs(score) / 0.55);
-  const btBias = bt.tested >= 12 ? (bt.accuracy - 50) / 100 : 0;
+
+  // Calibration: prefer the measured out-of-sample accuracy of the bucket this
+  // signal actually falls into (high-confidence / regime), not a generic guess.
+  const strong = Math.abs(score) >= threshold;
+  const regimeSlice = bt.byRegime[regime];
+  const buckets: Array<{ acc: number; n: number; w: number }> = [];
+  if (strong && bt.highConf.tested >= 12) buckets.push({ acc: bt.highConf.accuracy, n: bt.highConf.tested, w: 1.2 });
+  if (regimeSlice && regimeSlice.tested >= 12) buckets.push({ acc: regimeSlice.accuracy, n: regimeSlice.tested, w: 1 });
+  if (bt.tested >= 12) buckets.push({ acc: bt.accuracy, n: bt.tested, w: 0.8 });
+  const measured =
+    buckets.length
+      ? buckets.reduce((s, b) => s + b.acc * b.w, 0) / buckets.reduce((s, b) => s + b.w, 0)
+      : null;
+
   const agreeBonus = (agreement - 55) / 100;
   const regimePenalty = regime === "VOLATILE" ? 4 : regime === "RANGE" ? 2 : 0;
+  const raw = 50 + strength * 22 + agreeBonus * 10 - regimePenalty + (strong ? 3 : -6);
+  // Blend model confidence with the historically measured edge (shrunk by sample size).
+  const shrink = measured == null ? 0 : Math.min(0.65, bt.highConf.tested / 90);
   const probability = Math.max(
-    50,
-    Math.min(93, 50 + strength * 28 + btBias * 18 + agreeBonus * 12 - regimePenalty),
+    45,
+    Math.min(92, measured == null ? raw : raw * (1 - shrink) + measured * shrink),
   );
+  const advice: HeavySignal["advice"] = strong && probability >= 58 && regime !== "VOLATILE" ? "TRADE" : "WAIT";
+
 
   const direction: NextCandle["direction"] = score >= 0 ? "UP" : "DOWN";
   const open = price;
