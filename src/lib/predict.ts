@@ -193,6 +193,57 @@ function buildContext(candles: Candle[]) {
 
 const clamp = (v: number) => Math.max(-1, Math.min(1, v));
 
+/**
+ * Historical analog matcher (kNN): current normalised N-bar shape ko past ke
+ * sab shapes se compare karta hai aur k closest matches ki next-candle direction
+ * ka weighted average leta hai. Strictly backward-looking.
+ */
+function analogProbability(
+  ctx: Ctx,
+  i: number,
+  len = 6,
+  k = 15,
+): { prob: number | null; matches: number } {
+  if (i < len + 40) return { prob: null, matches: 0 };
+  const shape = (idx: number): number[] | null => {
+    const seg = ctx.candles.slice(idx - len + 1, idx + 1);
+    if (seg.length < len) return null;
+    const base = seg[0]!.close;
+    const a = ctx.atr[idx];
+    const scale = a && a > 0 ? a : base * 0.001;
+    const out: number[] = [];
+    for (const c of seg) {
+      out.push((c.close - base) / scale, (c.high - c.low) / scale, (c.close - c.open) / scale);
+    }
+    return out;
+  };
+  const cur = shape(i);
+  if (!cur) return { prob: null, matches: 0 };
+  const scored: Array<{ d: number; dir: number }> = [];
+  for (let j = len + 5; j < i - 1; j++) {
+    const s = shape(j);
+    if (!s) continue;
+    let d = 0;
+    for (let q = 0; q < cur.length; q++) d += (cur[q]! - s[q]!) ** 2;
+    const nxt = ctx.candles[j + 1]!;
+    const dir = Math.sign(nxt.close - nxt.open);
+    if (dir === 0) continue;
+    scored.push({ d: Math.sqrt(d), dir });
+  }
+  if (scored.length < 20) return { prob: null, matches: scored.length };
+  scored.sort((a, b) => a.d - b.d);
+  const top = scored.slice(0, Math.min(k, scored.length));
+  let wsum = 0;
+  let ups = 0;
+  for (const t of top) {
+    const w = 1 / (1 + t.d);
+    wsum += w;
+    if (t.dir > 0) ups += w;
+  }
+  return { prob: wsum > 0 ? ups / wsum : null, matches: top.length };
+}
+
+
 /** Base weights per factor — tuned by rolling hit rate at runtime. */
 const BASE_WEIGHTS: Record<string, number> = {
   emaFast: 2,
