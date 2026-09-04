@@ -84,8 +84,11 @@ export type HeavySignal = {
   shortWindowAccuracy: number | null;
   /** historical analog (kNN) match result for the current setup */
   analog: { prob: number | null; matches: number };
+  /** self-learned logistic model (walk-forward trained) up-probability */
+  model: { prob: number | null; trained: number; regimeTuned: boolean };
   agreement: number;
   markov: { prob: number | null; samples: number };
+
 
   extras: {
     adx: number | null;
