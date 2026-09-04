@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { Activity, ArrowDownRight, ArrowUpRight, Bot, Minus, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { CandleChart } from "@/components/CandleChart";
+import { CandleCountdown } from "@/components/CandleCountdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ema } from "@/lib/indicators";
