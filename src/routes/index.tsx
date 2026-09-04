@@ -66,7 +66,7 @@ function Dashboard() {
     queries: [interval, htfInterval].map((iv) => ({
       queryKey: ["xauusd", iv],
       queryFn: () => getCandles({ data: { interval: iv } }),
-      refetchInterval: 20_000,
+      refetchInterval: 10_000,
     })),
   });
 
@@ -79,7 +79,7 @@ function Dashboard() {
   const spotQuery = useQuery({
     queryKey: ["xauusd-spot"],
     queryFn: () => getSpot({}),
-    refetchInterval: 15_000,
+    refetchInterval: 10_000,
   });
   const spot = spotQuery.data?.price ?? null;
 
