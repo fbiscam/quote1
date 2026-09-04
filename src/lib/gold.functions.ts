@@ -73,10 +73,12 @@ export const fetchGoldCandles = createServerFn({ method: "GET" })
         closeTime: ts[i]! * 1000,
       });
     }
-    const candles = out.slice(-300);
+    const candles = onlyClosed(out, data.interval).slice(-300);
 
     // Yahoo GC=F futures spot se ~40-60 USD premium par trade karta hai.
     // Structure futures se lete hain, levels ko live spot (MT5 jaisa) par calibrate karte hain.
+    // NOTE: last candle ka close overwrite NAHI karte — warna fake bada body ban jata hai
+    // aur pattern/momentum signals galat ho jate hain.
     const spot = await fetchSpot();
     const last = candles[candles.length - 1];
     if (spot != null && last) {
@@ -88,13 +90,28 @@ export const fetchGoldCandles = createServerFn({ method: "GET" })
           c.low += offset;
           c.close += offset;
         }
-        last.close = spot;
-        last.high = Math.max(last.high, spot);
-        last.low = Math.min(last.low, spot);
       }
     }
     return candles;
   });
+
+const INTERVAL_MS: Record<string, number> = {
+  "1m": 60_000,
+  "5m": 300_000,
+  "15m": 900_000,
+  "1h": 3_600_000,
+};
+
+/**
+ * Sirf properly aligned + fully CLOSED candles rakhta hai.
+ * Yahoo aksar ek extra "current tick" bar deta hai (zero volume, non-aligned time)
+ * jo analysis ko kharab karta hai.
+ */
+function onlyClosed(rows: Candle[], interval: string): Candle[] {
+  const ms = INTERVAL_MS[interval] ?? 300_000;
+  const now = Date.now();
+  return rows.filter((c) => c.openTime % ms === 0 && c.openTime + ms <= now);
+}
 
 async function fetchSpot(): Promise<number | null> {
   try {
