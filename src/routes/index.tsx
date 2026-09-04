@@ -38,7 +38,7 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Heavy XAU/USD gold analysis: next candle projection with probability, EMA, RSI, MACD, Bollinger, Stochastic and live backtest accuracy. Educational only.",
+          "Heavy XAU/USD gold engine: 20+ factor adaptive ensemble, next candle projection, regime detection, multi-timeframe confluence and live backtest accuracy. Educational only.",
       },
       { property: "og:title", content: "XAU/USD Next Candle Predictor — Gold Analysis" },
       {
@@ -99,7 +99,7 @@ function Dashboard() {
           <p className="tick text-xs uppercase tracking-[0.28em] text-primary">XAU / USD · Gold</p>
           <h1 className="mt-1 text-3xl font-semibold md:text-4xl">Next Candle Prediction Engine</h1>
           <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-            Sirf Gold (XAU/USD). 8+ indicators ka weighted ensemble agli candle ka direction, expected
+            Sirf Gold (XAU/USD). 20+ factors (EMA, RSI, MACD, ADX/DI, Ichimoku, VWAP, CCI, %R, OBV, Markov, patterns) ka adaptive-weighted ensemble agli candle ka direction, expected
             open/high/low/close aur probability batata hai — saath me live backtest accuracy.
           </p>
         </div>
