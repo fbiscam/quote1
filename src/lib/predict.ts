@@ -392,20 +392,115 @@ function scoreFrom(
   };
 }
 
-function backtest(ctx: Ctx, rates: Record<string, { hit: number | null; n: number }>, lookback = 120): Backtest {
+const THRESHOLDS = [0.06, 0.1, 0.14, 0.18, 0.22, 0.28, 0.34, 0.42];
+
+/**
+ * Walk-forward evaluation: weights are tuned on the older half of the window and
+ * scored on the newer half, so the reported accuracy is genuinely out-of-sample.
+ * Also tunes the confidence threshold on the train half only.
+ */
+function walkForward(
+  ctx: Ctx,
+  fv: (i: number) => Array<{ key: string; label: string; value: number }>,
+  lookback = 320,
+): { bt: Backtest; rates: Record<string, { hit: number | null; n: number }>; threshold: number } {
+  const n = ctx.candles.length;
+  const end = n - 1;
+  const start = Math.max(60, end - lookback);
+  const usable = end - start;
+
+  // Not enough history for a split → single in-sample pass.
+  if (usable < 60) {
+    const rates = factorHitRates(ctx, start, end, fv);
+    const slice = evaluate(ctx, fv, rates, start, end, 0.08);
+    return {
+      bt: {
+        ...slice.overall,
+        outOfSample: false,
+        highConf: { ...slice.overall, threshold: 0.08 },
+        byRegime: slice.byRegime,
+        bestStreak: slice.bestStreak,
+      },
+      rates,
+      threshold: 0.08,
+    };
+  }
+
+  const mid = start + Math.floor(usable * 0.55);
+  const trainRates = factorHitRates(ctx, start, mid, fv);
+
+  // Tune the threshold on the train half only.
+  let threshold = 0.08;
+  let bestScore = -Infinity;
+  for (const t of THRESHOLDS) {
+    const r = evaluate(ctx, fv, trainRates, start, mid, t).overall;
+    if (r.tested < 12) continue;
+    // prefer accuracy, mildly reward sample size so we don't overfit a tiny slice
+    const s = r.accuracy + Math.min(6, r.tested / 8);
+    if (s > bestScore) {
+      bestScore = s;
+      threshold = t;
+    }
+  }
+
+  const test = evaluate(ctx, fv, trainRates, mid, end, 0.06);
+  const testHigh = evaluate(ctx, fv, trainRates, mid, end, threshold);
+
+  // Live weights use all available history (train + test).
+  const rates = factorHitRates(ctx, start, end, fv);
+
+  return {
+    bt: {
+      ...test.overall,
+      outOfSample: true,
+      highConf: { ...testHigh.overall, threshold },
+      byRegime: test.byRegime,
+      bestStreak: test.bestStreak,
+    },
+    rates,
+    threshold,
+  };
+}
+
+function evaluate(
+  ctx: Ctx,
+  fv: (i: number) => Array<{ key: string; label: string; value: number }>,
+  rates: Record<string, { hit: number | null; n: number }>,
+  from: number,
+  to: number,
+  minScore: number,
+): { overall: BacktestSlice; byRegime: Record<string, BacktestSlice>; bestStreak: number } {
   let tested = 0;
   let correct = 0;
-  const start = Math.max(60, ctx.candles.length - lookback - 1);
-  for (let i = start; i < ctx.candles.length - 1; i++) {
-    const { score } = scoreFrom(factorValues(ctx, i, null), rates);
-    if (Math.abs(score) < 0.08) continue;
+  let streak = 0;
+  let bestStreak = 0;
+  const byRegime: Record<string, BacktestSlice> = {};
+  for (let i = Math.max(60, from); i < Math.min(to, ctx.candles.length - 1); i++) {
+    const { score } = scoreFrom(fv(i), rates);
+    if (Math.abs(score) < minScore) continue;
     const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
     if (actual === 0) continue;
+    const hit = Math.sign(score) === actual;
     tested++;
-    if (Math.sign(score) === actual) correct++;
+    if (hit) {
+      correct++;
+      streak++;
+      if (streak > bestStreak) bestStreak = streak;
+    } else {
+      streak = 0;
+    }
+    const reg = detectRegime(ctx, i);
+    byRegime[reg] ??= { tested: 0, correct: 0, accuracy: 0 };
+    byRegime[reg]!.tested++;
+    if (hit) byRegime[reg]!.correct++;
   }
-  return { tested, correct, accuracy: tested ? (correct / tested) * 100 : 0 };
+  for (const v of Object.values(byRegime)) v.accuracy = v.tested ? (v.correct / v.tested) * 100 : 0;
+  return {
+    overall: { tested, correct, accuracy: tested ? (correct / tested) * 100 : 0 },
+    byRegime,
+    bestStreak,
+  };
 }
 
 /** Higher timeframe bias in [-1,1] from a second candle series. */
