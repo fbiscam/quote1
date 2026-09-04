@@ -585,10 +585,69 @@ function weightFor(key: string, hit: number | null): number {
   return base * mult;
 }
 
+/* ============================================================
+   Self-learning layer: L2-regularised logistic regression trained
+   on factor vectors (recency weighted, walk-forward only).
+   ============================================================ */
+
+export type LogitModel = { w: Record<string, number>; b: number; n: number };
+
+function trainLogistic(
+  ctx: Ctx,
+  fv: (i: number) => Array<{ key: string; label: string; value: number }>,
+  from: number,
+  to: number,
+  regime?: Regime,
+  epochs = 18,
+  lr = 0.06,
+  l2 = 0.004,
+): LogitModel | null {
+  const lo = Math.max(60, from);
+  const hi = Math.min(to, ctx.candles.length - 1);
+  const span = Math.max(1, hi - lo);
+  const rows: Array<{ x: Array<{ key: string; value: number }>; y: number; w: number }> = [];
+  for (let i = lo; i < hi; i++) {
+    const nxt = ctx.candles[i + 1]!;
+    const actual = Math.sign(nxt.close - nxt.open);
+    if (actual === 0) continue;
+    if (regime && detectRegime(ctx, i) !== regime) continue;
+    rows.push({ x: fv(i), y: actual > 0 ? 1 : 0, w: 0.5 + 2.5 * ((i - lo) / span) });
+  }
+  if (rows.length < (regime ? 60 : 40)) return null;
+  const w: Record<string, number> = {};
+  let b = 0;
+  for (let e = 0; e < epochs; e++) {
+    for (const r of rows) {
+      let z = b;
+      for (const f of r.x) z += (w[f.key] ?? 0) * f.value;
+      const p = 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, z))));
+      const g = (p - r.y) * r.w;
+      b -= lr * g * 0.1;
+      for (const f of r.x) {
+        const cur = w[f.key] ?? 0;
+        w[f.key] = cur - lr * (g * f.value + l2 * cur);
+      }
+    }
+  }
+  return { w, b, n: rows.length };
+}
+
+function logisticProb(
+  vals: Array<{ key: string; value: number }>,
+  m: LogitModel | null,
+): number | null {
+  if (!m) return null;
+  let z = m.b;
+  for (const f of vals) z += (m.w[f.key] ?? 0) * f.value;
+  return 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, z))));
+}
+
 function scoreFrom(
   values: Array<{ key: string; label: string; value: number }>,
   rates: Record<string, { hit: number | null; n: number }>,
-): { score: number; factors: Factor[]; agreement: number } {
+  model: LogitModel | null = null,
+  modelWeight = 0.35,
+): { score: number; factors: Factor[]; agreement: number; modelProb: number | null } {
   let sum = 0;
   let wsum = 0;
   const factors: Factor[] = [];
@@ -605,14 +664,22 @@ function scoreFrom(
   }
   factors.sort((a, b) => Math.abs(b.value * b.weight) - Math.abs(a.value * a.weight));
   const voted = up + down || 1;
-  return {
-    score: wsum === 0 ? 0 : clamp(sum / wsum),
-    factors,
-    agreement: (Math.max(up, down) / voted) * 100,
-  };
+  const ensemble = wsum === 0 ? 0 : clamp(sum / wsum);
+  const modelProb = logisticProb(values, model);
+  // learned model ka signed score ensemble ke sath blend hota hai
+  const blended =
+    modelProb == null
+      ? ensemble
+      : clamp(ensemble * (1 - modelWeight) + clamp((modelProb - 0.5) * 3) * modelWeight);
+  let agreement = (Math.max(up, down) / voted) * 100;
+  if (modelProb != null && Math.sign(modelProb - 0.5) === Math.sign(blended)) {
+    agreement = Math.min(100, agreement + 4);
+  }
+  return { score: blended, factors, agreement, modelProb };
 }
 
 const THRESHOLDS = [0.06, 0.1, 0.14, 0.18, 0.22, 0.28, 0.34, 0.42];
+
 
 /**
  * Walk-forward evaluation: weights are tuned on the older half of the window and
