@@ -783,6 +783,7 @@ function evaluate(
   from: number,
   to: number,
   minScore: number,
+  model: LogitModel | null = null,
 ): { overall: BacktestSlice; byRegime: Record<string, BacktestSlice>; bestStreak: number } {
   let tested = 0;
   let correct = 0;
@@ -790,7 +791,8 @@ function evaluate(
   let bestStreak = 0;
   const byRegime: Record<string, BacktestSlice> = {};
   for (let i = Math.max(60, from); i < Math.min(to, ctx.candles.length - 1); i++) {
-    const { score } = scoreFrom(fv(i), rates);
+    const { score } = scoreFrom(fv(i), rates, model);
+
     if (Math.abs(score) < minScore) continue;
     const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
