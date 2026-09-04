@@ -74,6 +74,10 @@ export type HeavySignal = {
   patterns: PatternHit[];
   regime: Regime;
   quality: "HIGH" | "MEDIUM" | "LOW";
+  /** TRADE = signal is above the tuned confidence threshold; WAIT = skip this candle */
+  advice: "TRADE" | "WAIT";
+  /** tuned |score| threshold required for a tradeable call */
+  threshold: number;
   agreement: number;
   markov: { prob: number | null; samples: number };
   extras: {
