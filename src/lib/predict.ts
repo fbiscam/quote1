@@ -824,13 +824,21 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
     45,
     Math.min(92, measured == null ? raw : raw * (1 - shrink) + measured * shrink),
   );
-  // Confluence gate: strong score, ya phir high agreement + HTF alignment.
+  // Confluence gate: strong score + stability + (agreement/HTF or analog support).
   const htfAgree = htfBias == null ? false : Math.sign(htfBias) === Math.sign(score) && Math.abs(htfBias) > 0.15;
+  const analogAgree =
+    analog.prob == null ? false : Math.sign(analog.prob - 0.5) === Math.sign(score) && Math.abs(analog.prob - 0.5) > 0.08;
+  const stableEnough = stability === 0 || stability >= 55;
+  const supported = htfAgree || analogAgree;
   const advice: HeavySignal["advice"] =
     regime !== "VOLATILE" &&
-    ((strong && probability >= 56) || (agreement >= 70 && htfAgree && probability >= 57))
+    stableEnough &&
+    ((strong && probability >= 56 && supported) ||
+      (strong && probability >= 62) ||
+      (agreement >= 70 && htfAgree && probability >= 57))
       ? "TRADE"
       : "WAIT";
+
 
 
   const direction: NextCandle["direction"] = score >= 0 ? "UP" : "DOWN";
