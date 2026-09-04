@@ -1,4 +1,24 @@
-import { analyze, atr, ema, rsi, sma, type Candle, type Signal } from "./indicators";
+import {
+  adx,
+  analyze,
+  atr,
+  cci,
+  detectAdvancedPatterns,
+  detectPatterns,
+  ema,
+  ichimoku,
+  markovUpProbability,
+  obv,
+  roc,
+  rsi,
+  sma,
+  stdev,
+  vwap,
+  williamsR,
+  type Candle,
+  type PatternHit,
+  type Signal,
+} from "./indicators";
 
 export type NextCandle = {
   direction: "UP" | "DOWN";
@@ -14,6 +34,19 @@ export type Levels = { support: number; resistance: number };
 
 export type Backtest = { tested: number; correct: number; accuracy: number };
 
+export type Factor = {
+  key: string;
+  label: string;
+  /** -1 (strong down) .. +1 (strong up) */
+  value: number;
+  /** effective weight after adaptive tuning */
+  weight: number;
+  /** rolling hit rate of this factor (%) or null when untested */
+  hitRate: number | null;
+};
+
+export type Regime = "TREND_UP" | "TREND_DOWN" | "RANGE" | "VOLATILE";
+
 export type HeavySignal = {
   base: Signal;
   next: NextCandle;
@@ -23,6 +56,26 @@ export type HeavySignal = {
   bb: { upper: number | null; lower: number | null; mid: number | null; pctB: number | null };
   stoch: number | null;
   score: number;
+  factors: Factor[];
+  patterns: PatternHit[];
+  regime: Regime;
+  quality: "HIGH" | "MEDIUM" | "LOW";
+  agreement: number;
+  markov: { prob: number | null; samples: number };
+  extras: {
+    adx: number | null;
+    plusDI: number | null;
+    minusDI: number | null;
+    williamsR: number | null;
+    cci: number | null;
+    roc: number | null;
+    vwap: number | null;
+    obvSlope: number | null;
+    tenkan: number | null;
+    kijun: number | null;
+    htfBias: number | null;
+    zscore: number | null;
+  };
 };
 
 function last<T>(a: T[]): T | undefined {
@@ -74,94 +127,329 @@ export function stochastic(candles: Candle[], period = 14): (number | null)[] {
   });
 }
 
-/** Weighted ensemble score in [-1, 1] for the candle after index `i`. */
-function ensembleScore(candles: Candle[], i: number): number {
-  const slice = candles.slice(0, i + 1);
-  if (slice.length < 40) return 0;
-  const closes = slice.map((c) => c.close);
-  const e9 = last(ema(closes, 9)) ?? null;
-  const e21 = last(ema(closes, 21)) ?? null;
-  const e50 = last(ema(closes, 50)) ?? null;
-  const r = last(rsi(closes, 14)) ?? null;
+/* ============================================================
+   Context: every series computed once for the whole dataset
+   ============================================================ */
+
+type Ctx = ReturnType<typeof buildContext>;
+
+function buildContext(candles: Candle[]) {
+  const closes = candles.map((c) => c.close);
   const m = macd(closes);
-  const hist = last(m.hist) ?? null;
-  const prevHist = m.hist[m.hist.length - 2] ?? null;
   const bb = bollinger(closes);
-  const bbU = last(bb.upper);
-  const bbL = last(bb.lower);
-  const st = last(stochastic(slice)) ?? null;
-  const price = closes[closes.length - 1]!;
-
-  let score = 0;
-  let weight = 0;
-
-  const add = (v: number, w: number) => {
-    score += v * w;
-    weight += w;
+  const dmi = adx(candles, 14);
+  const ich = ichimoku(candles);
+  return {
+    candles,
+    closes,
+    ema9: ema(closes, 9),
+    ema21: ema(closes, 21),
+    ema50: ema(closes, 50),
+    ema200: ema(closes, 200),
+    rsi: rsi(closes, 14),
+    macd: m,
+    bb,
+    stoch: stochastic(candles, 14),
+    stochSlow: sma(stochastic(candles, 14).map((v) => v ?? 50), 3),
+    atr: atr(candles, 14),
+    adx: dmi.adx,
+    plusDI: dmi.plusDI,
+    minusDI: dmi.minusDI,
+    willr: williamsR(candles, 14),
+    cci: cci(candles, 20),
+    roc: roc(closes, 9),
+    obv: obv(candles),
+    vwap: vwap(candles, 20),
+    sd20: stdev(closes, 20),
+    sma20: sma(closes, 20),
+    ich,
   };
-
-  if (e9 != null && e21 != null) add(Math.sign(e9 - e21), 2);
-  if (e21 != null && e50 != null) add(Math.sign(e21 - e50), 1.5);
-  if (r != null) add(r > 70 ? -0.8 : r < 30 ? 0.8 : (r - 50) / 25, 1.5);
-  if (hist != null && prevHist != null) add(Math.sign(hist) * 0.6 + Math.sign(hist - prevHist) * 0.4, 2);
-  if (bbU != null && bbL != null && bbU !== bbL) {
-    const pctB = (price - bbL) / (bbU - bbL);
-    add(pctB > 1 ? -0.8 : pctB < 0 ? 0.8 : (0.5 - pctB) * 1.2, 1);
-  }
-  if (st != null) add(st > 80 ? -0.7 : st < 20 ? 0.7 : (st - 50) / 40, 1);
-
-  // momentum of last 3 candles
-  const c1 = slice[slice.length - 1]!;
-  const c3 = slice[slice.length - 3];
-  if (c3) add(Math.sign(c1.close - c3.close) * 0.6, 1);
-
-  // candle body direction with volume confirmation
-  const avgVol = slice.slice(-21, -1).reduce((s, c) => s + c.volume, 0) / 20 || 1;
-  const volBoost = Math.min(1.5, c1.volume / avgVol);
-  add(Math.sign(c1.close - c1.open) * 0.5 * volBoost, 1);
-
-  const sig = analyze(slice);
-  add(sig.direction === "UP" ? 1 : sig.direction === "DOWN" ? -1 : 0, 1.5);
-
-  return weight === 0 ? 0 : Math.max(-1, Math.min(1, score / weight));
 }
 
-function backtest(candles: Candle[], lookback = 80): Backtest {
+const clamp = (v: number) => Math.max(-1, Math.min(1, v));
+
+/** Base weights per factor — tuned by rolling hit rate at runtime. */
+const BASE_WEIGHTS: Record<string, number> = {
+  emaFast: 2,
+  emaSlow: 1.5,
+  emaLong: 1,
+  rsi: 1.5,
+  macd: 2,
+  bb: 1,
+  stoch: 1,
+  adx: 1.5,
+  willr: 0.8,
+  cci: 0.8,
+  roc: 1,
+  obv: 1,
+  vwap: 1,
+  ich: 1.2,
+  meanRev: 1,
+  momentum: 1,
+  volume: 1,
+  pattern: 1.8,
+  rulebook: 1.5,
+  markov: 1.2,
+  htf: 2,
+};
+
+function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key: string; label: string; value: number }> {
+  const out: Array<{ key: string; label: string; value: number }> = [];
+  const push = (key: string, label: string, value: number | null) => {
+    if (value == null || Number.isNaN(value)) return;
+    out.push({ key, label, value: clamp(value) });
+  };
+  const price = ctx.closes[i]!;
+  const c = ctx.candles[i]!;
+
+  const e9 = ctx.ema9[i];
+  const e21 = ctx.ema21[i];
+  const e50 = ctx.ema50[i];
+  const e200 = ctx.ema200[i];
+  if (e9 != null && e21 != null) push("emaFast", "EMA 9 vs 21", clamp(((e9 - e21) / e21) * 400));
+  if (e21 != null && e50 != null) push("emaSlow", "EMA 21 vs 50", clamp(((e21 - e50) / e50) * 300));
+  if (e50 != null && e200 != null) push("emaLong", "EMA 50 vs 200 (macro trend)", Math.sign(e50 - e200) * 0.8);
+
+  const r = ctx.rsi[i];
+  if (r != null) push("rsi", `RSI ${r.toFixed(1)}`, r > 70 ? -0.8 : r < 30 ? 0.8 : (r - 50) / 25);
+
+  const hist = ctx.macd.hist[i];
+  const prevHist = ctx.macd.hist[i - 1];
+  if (hist != null && prevHist != null) {
+    push("macd", "MACD histogram + slope", Math.sign(hist) * 0.6 + Math.sign(hist - prevHist) * 0.4);
+  }
+
+  const bu = ctx.bb.upper[i];
+  const bl = ctx.bb.lower[i];
+  if (bu != null && bl != null && bu !== bl) {
+    const pctB = (price - bl) / (bu - bl);
+    push("bb", "Bollinger %B", pctB > 1 ? -0.8 : pctB < 0 ? 0.8 : (0.5 - pctB) * 1.2);
+  }
+
+  const st = ctx.stoch[i];
+  const stSlow = ctx.stochSlow[i];
+  if (st != null) {
+    const cross = stSlow != null ? Math.sign(st - stSlow) * 0.3 : 0;
+    push("stoch", `Stochastic ${st.toFixed(1)}`, (st > 80 ? -0.7 : st < 20 ? 0.7 : (st - 50) / 40) + cross);
+  }
+
+  const ax = ctx.adx[i];
+  const pdi = ctx.plusDI[i];
+  const mdi = ctx.minusDI[i];
+  if (ax != null && pdi != null && mdi != null) {
+    const strength = Math.min(1, ax / 35);
+    push("adx", `ADX ${ax.toFixed(1)} (+DI/-DI)`, Math.sign(pdi - mdi) * strength);
+  }
+
+  const w = ctx.willr[i];
+  if (w != null) push("willr", `Williams %R ${w.toFixed(1)}`, w < -80 ? 0.7 : w > -20 ? -0.7 : (w + 50) / 40);
+
+  const cc = ctx.cci[i];
+  if (cc != null) push("cci", `CCI ${cc.toFixed(0)}`, clamp(cc / 150));
+
+  const rc = ctx.roc[i];
+  if (rc != null) push("roc", `ROC ${rc.toFixed(2)}%`, clamp(rc * 3));
+
+  if (i > 5) {
+    const o0 = ctx.obv[i]!;
+    const o5 = ctx.obv[i - 5]!;
+    const scale = Math.abs(o0) + Math.abs(o5) || 1;
+    push("obv", "OBV slope (5)", clamp(((o0 - o5) / scale) * 4));
+  }
+
+  const vw = ctx.vwap[i];
+  if (vw != null) push("vwap", "Price vs VWAP 20", clamp(((price - vw) / vw) * 400));
+
+  const tk = ctx.ich.tenkan[i];
+  const kj = ctx.ich.kijun[i];
+  const sa = ctx.ich.spanA[i];
+  const sb = ctx.ich.spanB[i];
+  if (tk != null && kj != null) {
+    let v = Math.sign(tk - kj) * 0.6;
+    if (sa != null && sb != null) {
+      const top = Math.max(sa, sb);
+      const bot = Math.min(sa, sb);
+      v += price > top ? 0.4 : price < bot ? -0.4 : 0;
+    }
+    push("ich", "Ichimoku (tenkan/kijun + cloud)", v);
+  }
+
+  const sd = ctx.sd20[i];
+  const ma20 = ctx.sma20[i];
+  if (sd != null && ma20 != null && sd > 0) {
+    const z = (price - ma20) / sd;
+    push("meanRev", `Z-score ${z.toFixed(2)} (mean reversion)`, clamp(-z / 2.5));
+  }
+
+  const c3 = ctx.candles[i - 3];
+  if (c3) push("momentum", "3-candle momentum", Math.sign(c.close - c3.close) * 0.6);
+
+  const volWin = ctx.candles.slice(Math.max(0, i - 20), i);
+  const avgVol = volWin.reduce((s, x) => s + x.volume, 0) / (volWin.length || 1) || 1;
+  const volBoost = Math.min(1.5, (c.volume || avgVol) / avgVol);
+  push("volume", "Candle body + volume", Math.sign(c.close - c.open) * 0.5 * volBoost);
+
+  const slice = ctx.candles.slice(Math.max(0, i - 5), i + 1);
+  const pats = [...detectPatterns(slice), ...detectAdvancedPatterns(slice)];
+  if (pats.length) {
+    const pv = pats.reduce((s, p) => s + (p.bias === "up" ? 1 : p.bias === "down" ? -1 : 0), 0) / pats.length;
+    push("pattern", `Candle patterns (${pats.length})`, pv);
+  }
+
+  const mk = markovUpProbability(ctx.candles.slice(0, i + 1), 2);
+  if (mk.prob != null) push("markov", `Markov sequence bias (${mk.samples})`, (mk.prob - 0.5) * 2);
+
+  if (htfBias != null) push("htf", "Higher timeframe alignment", htfBias);
+
+  return out;
+}
+
+/** Per-factor rolling hit rate → adaptive weight multiplier. */
+function factorHitRates(ctx: Ctx, lookback: number): Record<string, { hit: number | null; n: number }> {
+  const stats: Record<string, { correct: number; n: number }> = {};
+  const start = Math.max(60, ctx.candles.length - lookback - 1);
+  for (let i = start; i < ctx.candles.length - 1; i++) {
+    const nxt = ctx.candles[i + 1]!;
+    const actual = Math.sign(nxt.close - nxt.open);
+    if (actual === 0) continue;
+    for (const f of factorValues(ctx, i, null)) {
+      if (Math.abs(f.value) < 0.1) continue;
+      stats[f.key] ??= { correct: 0, n: 0 };
+      stats[f.key]!.n++;
+      if (Math.sign(f.value) === actual) stats[f.key]!.correct++;
+    }
+  }
+  const out: Record<string, { hit: number | null; n: number }> = {};
+  for (const [k, v] of Object.entries(stats)) {
+    out[k] = { hit: v.n >= 12 ? (v.correct / v.n) * 100 : null, n: v.n };
+  }
+  return out;
+}
+
+function weightFor(key: string, hit: number | null): number {
+  const base = BASE_WEIGHTS[key] ?? 1;
+  if (hit == null) return base;
+  // 50% hit rate → 1x, 65% → ~1.45x, 35% → ~0.55x (contrarian factors get muted)
+  const mult = Math.max(0.35, Math.min(1.6, 1 + (hit - 50) / 33));
+  return base * mult;
+}
+
+function scoreFrom(
+  values: Array<{ key: string; label: string; value: number }>,
+  rates: Record<string, { hit: number | null; n: number }>,
+): { score: number; factors: Factor[]; agreement: number } {
+  let sum = 0;
+  let wsum = 0;
+  const factors: Factor[] = [];
+  let up = 0;
+  let down = 0;
+  for (const v of values) {
+    const hit = rates[v.key]?.hit ?? null;
+    const w = weightFor(v.key, hit);
+    sum += v.value * w;
+    wsum += w;
+    if (v.value > 0.1) up++;
+    else if (v.value < -0.1) down++;
+    factors.push({ key: v.key, label: v.label, value: v.value, weight: w, hitRate: hit });
+  }
+  factors.sort((a, b) => Math.abs(b.value * b.weight) - Math.abs(a.value * a.weight));
+  const voted = up + down || 1;
+  return {
+    score: wsum === 0 ? 0 : clamp(sum / wsum),
+    factors,
+    agreement: (Math.max(up, down) / voted) * 100,
+  };
+}
+
+function backtest(ctx: Ctx, rates: Record<string, { hit: number | null; n: number }>, lookback = 120): Backtest {
   let tested = 0;
   let correct = 0;
-  const start = Math.max(45, candles.length - lookback - 1);
-  for (let i = start; i < candles.length - 1; i++) {
-    const s = ensembleScore(candles, i);
-    if (Math.abs(s) < 0.08) continue;
-    const nxt = candles[i + 1]!;
+  const start = Math.max(60, ctx.candles.length - lookback - 1);
+  for (let i = start; i < ctx.candles.length - 1; i++) {
+    const { score } = scoreFrom(factorValues(ctx, i, null), rates);
+    if (Math.abs(score) < 0.08) continue;
+    const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
     if (actual === 0) continue;
     tested++;
-    if (Math.sign(s) === actual) correct++;
+    if (Math.sign(score) === actual) correct++;
   }
   return { tested, correct, accuracy: tested ? (correct / tested) * 100 : 0 };
 }
 
-export function predict(candles: Candle[]): HeavySignal | null {
+/** Higher timeframe bias in [-1,1] from a second candle series. */
+export function higherTimeframeBias(htf: Candle[]): number | null {
+  if (htf.length < 55) return null;
+  const closes = htf.map((c) => c.close);
+  const e9 = last(ema(closes, 9));
+  const e21 = last(ema(closes, 21));
+  const e50 = last(ema(closes, 50));
+  const r = last(rsi(closes, 14));
+  const h = last(macd(closes).hist);
+  let v = 0;
+  let n = 0;
+  if (e9 != null && e21 != null) {
+    v += Math.sign(e9 - e21);
+    n++;
+  }
+  if (e21 != null && e50 != null) {
+    v += Math.sign(e21 - e50);
+    n++;
+  }
+  if (r != null) {
+    v += clamp((r - 50) / 20);
+    n++;
+  }
+  if (h != null) {
+    v += Math.sign(h);
+    n++;
+  }
+  return n === 0 ? null : clamp(v / n);
+}
+
+function detectRegime(ctx: Ctx, i: number): Regime {
+  const ax = ctx.adx[i] ?? 0;
+  const a = ctx.atr[i];
+  const price = ctx.closes[i]!;
+  const atrPct = a && price ? (a / price) * 100 : 0;
+  const e21 = ctx.ema21[i];
+  const e50 = ctx.ema50[i];
+  if (atrPct > 0.45) return "VOLATILE";
+  if (ax >= 22 && e21 != null && e50 != null) return e21 > e50 ? "TREND_UP" : "TREND_DOWN";
+  return "RANGE";
+}
+
+export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
   if (candles.length < 60) return null;
-  const closes = candles.map((c) => c.close);
+  const ctx = buildContext(candles);
   const i = candles.length - 1;
-  const score = ensembleScore(candles, i);
+  const price = ctx.closes[i]!;
+
+  const rates = factorHitRates(ctx, 150);
+  const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
+  const { score, factors, agreement } = scoreFrom(factorValues(ctx, i, htfBias), rates);
+
   const base = analyze(candles);
-  const a = last(atr(candles, 14)) ?? null;
-  const price = closes[i]!;
-  const range = a ?? (price * 0.001);
+  const bt = backtest(ctx, rates, 120);
+  const regime = detectRegime(ctx, i);
+  const mk = markovUpProbability(candles, 2);
 
-  const bt = backtest(candles);
+  const a = ctx.atr[i] ?? price * 0.001;
+  const strength = Math.min(1, Math.abs(score) / 0.55);
+  const btBias = bt.tested >= 12 ? (bt.accuracy - 50) / 100 : 0;
+  const agreeBonus = (agreement - 55) / 100;
+  const regimePenalty = regime === "VOLATILE" ? 4 : regime === "RANGE" ? 2 : 0;
+  const probability = Math.max(
+    50,
+    Math.min(93, 50 + strength * 28 + btBias * 18 + agreeBonus * 12 - regimePenalty),
+  );
+
   const direction: NextCandle["direction"] = score >= 0 ? "UP" : "DOWN";
-  const strength = Math.min(1, Math.abs(score) / 0.6);
-  const btBias = bt.tested >= 10 ? (bt.accuracy - 50) / 100 : 0;
-  const probability = Math.max(50, Math.min(92, 50 + strength * 32 + btBias * 20));
-
   const open = price;
-  const move = range * (0.35 + strength * 0.55) * (direction === "UP" ? 1 : -1);
+  const volAdj = regime === "VOLATILE" ? 1.3 : regime === "RANGE" ? 0.8 : 1;
+  const move = a * (0.35 + strength * 0.55) * volAdj * (direction === "UP" ? 1 : -1);
   const close = open + move;
-  const wick = range * 0.35;
+  const wick = a * 0.35 * volAdj;
   const high = Math.max(open, close) + wick * (direction === "UP" ? 1 : 0.6);
   const low = Math.min(open, close) - wick * (direction === "DOWN" ? 1 : 0.6);
 
@@ -171,10 +459,18 @@ export function predict(candles: Candle[]): HeavySignal | null {
     resistance: Math.max(...win.map((c) => c.high)),
   };
 
-  const m = macd(closes);
-  const bb = bollinger(closes);
-  const bbU = last(bb.upper) ?? null;
-  const bbL = last(bb.lower) ?? null;
+  const bbU = ctx.bb.upper[i] ?? null;
+  const bbL = ctx.bb.lower[i] ?? null;
+  const sd = ctx.sd20[i];
+  const ma20 = ctx.sma20[i];
+
+  const patterns = [...detectPatterns(candles), ...detectAdvancedPatterns(candles)];
+  const quality: HeavySignal["quality"] =
+    probability >= 72 && agreement >= 68 && regime !== "VOLATILE"
+      ? "HIGH"
+      : probability >= 62 && agreement >= 58
+        ? "MEDIUM"
+        : "LOW";
 
   return {
     base,
@@ -189,14 +485,38 @@ export function predict(candles: Candle[]): HeavySignal | null {
     },
     levels,
     backtest: bt,
-    macd: { line: last(m.line) ?? null, signal: last(m.signal) ?? null, hist: last(m.hist) ?? null },
+    macd: {
+      line: ctx.macd.line[i] ?? null,
+      signal: ctx.macd.signal[i] ?? null,
+      hist: ctx.macd.hist[i] ?? null,
+    },
     bb: {
       upper: bbU,
       lower: bbL,
-      mid: last(bb.mid) ?? null,
+      mid: ctx.bb.mid[i] ?? null,
       pctB: bbU != null && bbL != null && bbU !== bbL ? ((price - bbL) / (bbU - bbL)) * 100 : null,
     },
-    stoch: last(stochastic(candles)) ?? null,
+    stoch: ctx.stoch[i] ?? null,
     score,
+    factors,
+    patterns,
+    regime,
+    quality,
+    agreement,
+    markov: mk,
+    extras: {
+      adx: ctx.adx[i] ?? null,
+      plusDI: ctx.plusDI[i] ?? null,
+      minusDI: ctx.minusDI[i] ?? null,
+      williamsR: ctx.willr[i] ?? null,
+      cci: ctx.cci[i] ?? null,
+      roc: ctx.roc[i] ?? null,
+      vwap: ctx.vwap[i] ?? null,
+      obvSlope: i > 5 ? (ctx.obv[i]! - ctx.obv[i - 5]!) : null,
+      tenkan: ctx.ich.tenkan[i] ?? null,
+      kijun: ctx.ich.kijun[i] ?? null,
+      htfBias,
+      zscore: sd != null && ma20 != null && sd > 0 ? (price - ma20) / sd : null,
+    },
   };
 }
