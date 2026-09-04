@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Activity, ArrowDownRight, ArrowUpRight, Minus, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { CandleChart } from "@/components/CandleChart";
@@ -21,6 +21,16 @@ const INTERVALS = [
 
 type Interval = (typeof INTERVALS)[number]["value"];
 
+/** Higher timeframe used for trend confluence. */
+const HTF: Record<Interval, Interval> = { "1m": "15m", "5m": "1h", "15m": "1h", "1h": "1h" };
+
+const REGIME_LABEL: Record<string, string> = {
+  TREND_UP: "Uptrend (strong)",
+  TREND_DOWN: "Downtrend (strong)",
+  RANGE: "Range / sideways",
+  VOLATILE: "High volatility",
+};
+
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
@@ -28,7 +38,7 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Heavy XAU/USD gold analysis: next candle projection with probability, EMA, RSI, MACD, Bollinger, Stochastic and live backtest accuracy. Educational only.",
+          "Heavy XAU/USD gold engine: 20+ factor adaptive ensemble, next candle projection, regime detection, multi-timeframe confluence and live backtest accuracy. Educational only.",
       },
       { property: "og:title", content: "XAU/USD Next Candle Predictor — Gold Analysis" },
       {
@@ -53,11 +63,22 @@ function Dashboard() {
     refetchInterval: 20_000,
   });
 
+  const htfInterval = HTF[interval];
+  const { data: htfData } = useQuery({
+    queryKey: ["xauusd", "htf", htfInterval],
+    queryFn: () => getCandles({ data: { interval: htfInterval } }),
+    refetchInterval: 60_000,
+    enabled: htfInterval !== interval,
+  });
+
   const candles = data ?? [];
   const closes = candles.map((c) => c.close);
   const e9 = ema(closes, 9);
   const e21 = ema(closes, 21);
-  const heavy = candles.length >= 60 ? predict(candles) : null;
+  const heavy = useMemo(
+    () => (candles.length >= 60 ? predict(candles, htfData ?? undefined) : null),
+    [candles, htfData],
+  );
   const signal = heavy?.base ?? null;
   const last = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
@@ -78,7 +99,7 @@ function Dashboard() {
           <p className="tick text-xs uppercase tracking-[0.28em] text-primary">XAU / USD · Gold</p>
           <h1 className="mt-1 text-3xl font-semibold md:text-4xl">Next Candle Prediction Engine</h1>
           <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-            Sirf Gold (XAU/USD). 8+ indicators ka weighted ensemble agli candle ka direction, expected
+            Sirf Gold (XAU/USD). 20+ factors (EMA, RSI, MACD, ADX/DI, Ichimoku, VWAP, CCI, %R, OBV, Markov, patterns) ka adaptive-weighted ensemble agli candle ka direction, expected
             open/high/low/close aur probability batata hai — saath me live backtest accuracy.
           </p>
         </div>
@@ -186,6 +207,24 @@ function Dashboard() {
             </div>
           </dl>
 
+          <div className="mt-5 flex flex-wrap gap-2 text-[11px]">
+            <Badge variant="outline" className="tick border-current/40">
+              Signal quality: {heavy?.quality ?? "—"}
+            </Badge>
+            <Badge variant="outline" className="tick border-current/40">
+              Regime: {heavy ? REGIME_LABEL[heavy.regime] : "—"}
+            </Badge>
+            <Badge variant="outline" className="tick border-current/40">
+              Agreement: {heavy ? `${heavy.agreement.toFixed(0)}%` : "—"}
+            </Badge>
+            <Badge variant="outline" className="tick border-current/40">
+              HTF: {heavy?.extras.htfBias == null ? "—" : heavy.extras.htfBias > 0.1 ? "Bullish" : heavy.extras.htfBias < -0.1 ? "Bearish" : "Flat"}
+            </Badge>
+            <Badge variant="outline" className="tick border-current/40">
+              Markov: {heavy?.markov.prob == null ? "—" : `${(heavy.markov.prob * 100).toFixed(0)}% up`}
+            </Badge>
+          </div>
+
           <div className="mt-5 rounded-lg bg-foreground/5 p-3 text-xs">
             <p className="opacity-70">Backtest (last {heavy?.backtest.tested ?? 0} signals)</p>
             <p className="tick text-lg font-semibold">
@@ -204,9 +243,10 @@ function Dashboard() {
         </section>
 
         <section className="panel p-6">
-          <h2 className="text-lg font-semibold">Indicator breakdown</h2>
+          <h2 className="text-lg font-semibold">Factor engine ({heavy?.factors.length ?? 0} signals)</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Har factor apna weight deta hai; sab mila kar final ensemble score aur probability banti hai.
+            Har factor ka weight uske rolling hit rate se auto-tune hota hai — jo factor recent data me sahi raha,
+            uska asar zyada.
           </p>
 
           <dl className="tick mt-4 grid grid-cols-2 gap-3 text-xs md:grid-cols-3">
@@ -215,11 +255,17 @@ function Dashboard() {
               { k: "Stochastic", v: heavy?.stoch?.toFixed(1) ?? "—" },
               { k: "MACD hist", v: heavy?.macd.hist?.toFixed(3) ?? "—" },
               { k: "%B (Bollinger)", v: heavy?.bb.pctB?.toFixed(1) ?? "—" },
+              { k: "ADX", v: heavy?.extras.adx?.toFixed(1) ?? "—" },
+              { k: "+DI / -DI", v: heavy ? `${fmt(heavy.extras.plusDI, 1)} / ${fmt(heavy.extras.minusDI, 1)}` : "—" },
+              { k: "Williams %R", v: heavy?.extras.williamsR?.toFixed(1) ?? "—" },
+              { k: "CCI 20", v: heavy?.extras.cci?.toFixed(0) ?? "—" },
+              { k: "ROC 9", v: heavy?.extras.roc == null ? "—" : `${heavy.extras.roc.toFixed(2)}%` },
+              { k: "VWAP 20", v: fmt(heavy?.extras.vwap) },
+              { k: "Z-score", v: heavy?.extras.zscore?.toFixed(2) ?? "—" },
+              { k: "Ichimoku T/K", v: heavy ? `${fmt(heavy.extras.tenkan)} / ${fmt(heavy.extras.kijun)}` : "—" },
               { k: "ATR %", v: signal?.atrPct?.toFixed(3) ?? "—" },
-              { k: "EMA 9 / 21", v: signal ? `${fmt(signal.ema9)} / ${fmt(signal.ema21)}` : "—" },
               { k: "Support", v: fmt(heavy?.levels.support) },
               { k: "Resistance", v: fmt(heavy?.levels.resistance) },
-              { k: "BB mid", v: fmt(heavy?.bb.mid) },
             ].map((x) => (
               <div key={x.k} className="rounded-lg bg-secondary/50 p-3">
                 <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{x.k}</dt>
@@ -228,26 +274,59 @@ function Dashboard() {
             ))}
           </dl>
 
-          <ul className="mt-5 space-y-3">
-            {(signal?.reasons ?? []).map((r, idx) => (
-              <li key={idx} className="flex items-start gap-3 rounded-lg bg-secondary/50 p-3">
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "tick mt-0.5 shrink-0",
-                    r.score > 0 && "border-bull/50 text-bull",
-                    r.score < 0 && "border-bear/50 text-bear",
-                    r.score === 0 && "border-border text-muted-foreground",
-                  )}
-                >
-                  {r.score > 0 ? `+${r.score}` : r.score}
-                </Badge>
-                <div>
-                  <p className="text-sm font-medium">{r.label}</p>
-                  <p className="text-xs text-muted-foreground">{r.detail}</p>
-                </div>
-              </li>
-            ))}
+          {!!heavy?.patterns.length && (
+            <div className="mt-5">
+              <p className="text-xs uppercase tracking-widest text-muted-foreground">Detected patterns</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {heavy.patterns.map((p) => (
+                  <Badge
+                    key={p.name}
+                    variant="outline"
+                    className={cn(
+                      "tick",
+                      p.bias === "up" && "border-bull/50 text-bull",
+                      p.bias === "down" && "border-bear/50 text-bear",
+                      p.bias === "neutral" && "border-border text-muted-foreground",
+                    )}
+                    title={p.note}
+                  >
+                    {p.name}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <ul className="mt-5 space-y-2">
+            {(heavy?.factors ?? []).map((f) => {
+              const impact = f.value * f.weight;
+              const pct = Math.min(100, Math.abs(impact) * 45);
+              return (
+                <li key={f.key} className="rounded-lg bg-secondary/50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium">{f.label}</p>
+                    <span
+                      className={cn(
+                        "tick text-xs",
+                        impact > 0.05 ? "text-bull" : impact < -0.05 ? "text-bear" : "text-muted-foreground",
+                      )}
+                    >
+                      {impact > 0 ? "+" : ""}
+                      {impact.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex h-1.5 w-full overflow-hidden rounded-full bg-foreground/10">
+                    <div
+                      className={cn("h-full rounded-full", impact >= 0 ? "bg-bull" : "bg-bear")}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <p className="tick mt-1.5 text-[11px] text-muted-foreground">
+                    weight {f.weight.toFixed(2)} · hit rate {f.hitRate == null ? "n/a" : `${f.hitRate.toFixed(0)}%`}
+                  </p>
+                </li>
+              );
+            })}
             {heavy === null && !isLoading && (
               <li className="text-sm text-muted-foreground">Analysis ke liye kaafi candles nahi hain.</li>
             )}
