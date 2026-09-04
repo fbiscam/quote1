@@ -24,9 +24,15 @@ const YF_INTERVAL: Record<string, string> = {
 export const fetchGoldCandles = createServerFn({ method: "GET" })
   .inputValidator((data: unknown) => schema.parse(data))
   .handler(async ({ data }): Promise<Candle[]> => {
+    // 1) Bluesmind API (agar configured hai) — primary source
+    const bm = await fetchBluesmind(data.interval);
+    if (bm && bm.length >= 60) return bm.slice(-300);
+
+    // 2) Fallback: Yahoo GC=F + spot calibration
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=${YF_INTERVAL[data.interval]}&range=${RANGE[data.interval]}`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
     if (!res.ok) throw new Error(`Gold data load nahi hua (${res.status})`);
+
     const json = (await res.json()) as {
       chart: {
         result:
