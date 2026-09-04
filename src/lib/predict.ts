@@ -510,7 +510,14 @@ function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key:
     else if (dnStack) push("emaStack", "EMA stack fully bearish", -0.9);
   }
 
+  // 11) Historical analog matcher (kNN on normalised candle shape)
+  {
+    const an = analogProbability(ctx, i);
+    if (an.prob != null) push("analog", `Historical analogs (${an.matches})`, (an.prob - 0.5) * 2.2);
+  }
+
   return out;
+
 }
 
 /** Memoised factor values per candle index (heavy: patterns + markov). */
