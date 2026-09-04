@@ -277,6 +277,8 @@ const BASE_WEIGHTS: Record<string, number> = {
   gap: 0.7,
   ribbon: 1.2,
   emaStack: 1.4,
+  analog: 2.2,
+
 };
 
 function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key: string; label: string; value: number }> {
