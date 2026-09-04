@@ -620,7 +620,13 @@ function walkForward(
   ctx: Ctx,
   fv: (i: number) => Array<{ key: string; label: string; value: number }>,
   lookback = 320,
-): { bt: Backtest; rates: Record<string, { hit: number | null; n: number }>; threshold: number } {
+): {
+  bt: Backtest;
+  rates: Record<string, { hit: number | null; n: number }>;
+  threshold: number;
+  stability: number;
+  shortAcc: number | null;
+} {
   const n = ctx.candles.length;
   const end = n - 1;
   const start = Math.max(60, end - lookback);
@@ -640,6 +646,8 @@ function walkForward(
       },
       rates,
       threshold: 0.08,
+      stability: 0,
+      shortAcc: null,
     };
   }
 
@@ -663,6 +671,15 @@ function walkForward(
   const test = evaluate(ctx, fv, trainRates, mid, end, 0.06);
   const testHigh = evaluate(ctx, fv, trainRates, mid, end, threshold);
 
+  // Second, shorter validation window (most recent third) → regime-drift check.
+  const shortFrom = end - Math.max(30, Math.floor(usable * 0.25));
+  const shortSlice = evaluate(ctx, fv, trainRates, Math.max(mid, shortFrom), end, threshold).overall;
+  const shortAcc = shortSlice.tested >= 8 ? shortSlice.accuracy : null;
+  const stability =
+    shortAcc == null || testHigh.overall.tested < 8
+      ? 0
+      : Math.max(0, 100 - Math.abs(shortAcc - testHigh.overall.accuracy) * 2.5);
+
   // Live weights use all available history (train + test).
   const rates = factorHitRates(ctx, start, end, fv);
 
@@ -676,7 +693,10 @@ function walkForward(
     },
     rates,
     threshold,
+    stability,
+    shortAcc,
   };
+
 }
 
 function evaluate(
