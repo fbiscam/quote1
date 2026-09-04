@@ -198,3 +198,216 @@ export function analyze(candles: Candle[]): Signal {
 
   return { direction, confidence, reasons, patterns, rsi: r, ema9: e9, ema21: e21, atrPct };
 }
+
+/* ============================================================
+   Heavy indicator pack
+   ============================================================ */
+
+export function stdev(values: number[], period: number): (number | null)[] {
+  return values.map((_, i) => {
+    if (i < period - 1) return null;
+    const win = values.slice(i - period + 1, i + 1);
+    const m = win.reduce((a, b) => a + b, 0) / period;
+    return Math.sqrt(win.reduce((s, v) => s + (v - m) ** 2, 0) / period);
+  });
+}
+
+/** Wilder's ADX with +DI / -DI. */
+export function adx(candles: Candle[], period = 14) {
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+  const tr: number[] = [];
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i]!;
+    if (i === 0) {
+      plusDM.push(0);
+      minusDM.push(0);
+      tr.push(c.high - c.low);
+      continue;
+    }
+    const p = candles[i - 1]!;
+    const up = c.high - p.high;
+    const down = p.low - c.low;
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+    tr.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+  }
+  const smooth = (arr: number[]) => ema(arr, period);
+  const trS = smooth(tr);
+  const pS = smooth(plusDM);
+  const mS = smooth(minusDM);
+  const pdi: (number | null)[] = [];
+  const mdi: (number | null)[] = [];
+  const dx: number[] = [];
+  for (let i = 0; i < candles.length; i++) {
+    const t = trS[i];
+    const p = pS[i];
+    const m = mS[i];
+    if (t == null || p == null || m == null || t === 0) {
+      pdi.push(null);
+      mdi.push(null);
+      dx.push(0);
+      continue;
+    }
+    const pv = (p / t) * 100;
+    const mv = (m / t) * 100;
+    pdi.push(pv);
+    mdi.push(mv);
+    dx.push(pv + mv === 0 ? 0 : (Math.abs(pv - mv) / (pv + mv)) * 100);
+  }
+  return { adx: ema(dx, period), plusDI: pdi, minusDI: mdi };
+}
+
+export function williamsR(candles: Candle[], period = 14): (number | null)[] {
+  return candles.map((c, i) => {
+    if (i < period - 1) return null;
+    const win = candles.slice(i - period + 1, i + 1);
+    const hi = Math.max(...win.map((w) => w.high));
+    const lo = Math.min(...win.map((w) => w.low));
+    if (hi === lo) return -50;
+    return ((hi - c.close) / (hi - lo)) * -100;
+  });
+}
+
+export function cci(candles: Candle[], period = 20): (number | null)[] {
+  const tp = candles.map((c) => (c.high + c.low + c.close) / 3);
+  const ma = sma(tp, period);
+  return tp.map((v, i) => {
+    const m = ma[i];
+    if (m == null) return null;
+    const win = tp.slice(i - period + 1, i + 1);
+    const md = win.reduce((s, x) => s + Math.abs(x - m), 0) / period;
+    return md === 0 ? 0 : (v - m) / (0.015 * md);
+  });
+}
+
+export function roc(values: number[], period = 9): (number | null)[] {
+  return values.map((v, i) => {
+    const p = values[i - period];
+    return p == null || p === 0 ? null : ((v - p) / p) * 100;
+  });
+}
+
+export function obv(candles: Candle[]): number[] {
+  let acc = 0;
+  return candles.map((c, i) => {
+    const p = candles[i - 1];
+    if (p) acc += c.close > p.close ? c.volume : c.close < p.close ? -c.volume : 0;
+    return acc;
+  });
+}
+
+/** Rolling VWAP over `period` candles. */
+export function vwap(candles: Candle[], period = 20): (number | null)[] {
+  return candles.map((_, i) => {
+    if (i < period - 1) return null;
+    const win = candles.slice(i - period + 1, i + 1);
+    let pv = 0;
+    let v = 0;
+    for (const c of win) {
+      const tp = (c.high + c.low + c.close) / 3;
+      const vol = c.volume || 1;
+      pv += tp * vol;
+      v += vol;
+    }
+    return v === 0 ? null : pv / v;
+  });
+}
+
+/** Keltner channel (EMA20 +/- 2*ATR). */
+export function keltner(candles: Candle[], period = 20, mult = 2) {
+  const mid = ema(candles.map((c) => c.close), period);
+  const a = atr(candles, period);
+  return {
+    mid,
+    upper: mid.map((m, i) => (m == null || a[i] == null ? null : m + mult * a[i]!)),
+    lower: mid.map((m, i) => (m == null || a[i] == null ? null : m - mult * a[i]!)),
+  };
+}
+
+/** Ichimoku conversion / base line + cloud bias. */
+export function ichimoku(candles: Candle[]) {
+  const hl = (p: number, i: number) => {
+    if (i < p - 1) return null;
+    const win = candles.slice(i - p + 1, i + 1);
+    return (Math.max(...win.map((c) => c.high)) + Math.min(...win.map((c) => c.low))) / 2;
+  };
+  const tenkan = candles.map((_, i) => hl(9, i));
+  const kijun = candles.map((_, i) => hl(26, i));
+  const spanA = candles.map((_, i) => {
+    const t = tenkan[i];
+    const k = kijun[i];
+    return t == null || k == null ? null : (t + k) / 2;
+  });
+  const spanB = candles.map((_, i) => hl(52, i));
+  return { tenkan, kijun, spanA, spanB };
+}
+
+/** Probability of an up candle given the last `order` candle directions (Markov). */
+export function markovUpProbability(candles: Candle[], order = 2): { prob: number | null; samples: number } {
+  if (candles.length < order + 20) return { prob: null, samples: 0 };
+  const dirs = candles.map((c) => (c.close >= c.open ? 1 : 0));
+  const key = dirs.slice(dirs.length - order).join("");
+  let up = 0;
+  let total = 0;
+  for (let i = order; i < dirs.length - 1; i++) {
+    if (dirs.slice(i - order, i).join("") === key) {
+      total++;
+      if (dirs[i] === 1) up++;
+    }
+  }
+  return { prob: total >= 8 ? up / total : null, samples: total };
+}
+
+/** Extra multi-candle patterns on top of detectPatterns(). */
+export function detectAdvancedPatterns(candles: Candle[]): PatternHit[] {
+  const n = candles.length;
+  if (n < 4) return [];
+  const c1 = candles[n - 1]!;
+  const c2 = candles[n - 2]!;
+  const c3 = candles[n - 3]!;
+  const hits: PatternHit[] = [];
+  const bull = (c: Candle) => c.close > c.open;
+  const body = (c: Candle) => Math.abs(c.close - c.open);
+  const range = (c: Candle) => c.high - c.low || 1e-9;
+
+  if (!bull(c3) && body(c2) / range(c2) < 0.3 && bull(c1) && c1.close > (c3.open + c3.close) / 2) {
+    hits.push({ name: "Morning Star", bias: "up", note: "3-candle bullish reversal ban raha hai." });
+  }
+  if (bull(c3) && body(c2) / range(c2) < 0.3 && !bull(c1) && c1.close < (c3.open + c3.close) / 2) {
+    hits.push({ name: "Evening Star", bias: "down", note: "3-candle bearish reversal ban raha hai." });
+  }
+  if (bull(c1) && bull(c2) && bull(c3) && c1.close > c2.close && c2.close > c3.close) {
+    hits.push({ name: "Three White Soldiers", bias: "up", note: "Lagatar 3 strong green — buyers control." });
+  }
+  if (!bull(c1) && !bull(c2) && !bull(c3) && c1.close < c2.close && c2.close < c3.close) {
+    hits.push({ name: "Three Black Crows", bias: "down", note: "Lagatar 3 strong red — sellers control." });
+  }
+  if (!bull(c2) && bull(c1) && c1.open < c2.close && c1.close > (c2.open + c2.close) / 2 && c1.close < c2.open) {
+    hits.push({ name: "Piercing Line", bias: "up", note: "Red candle ka aadha hissa recover hua." });
+  }
+  if (bull(c2) && !bull(c1) && c1.open > c2.close && c1.close < (c2.open + c2.close) / 2 && c1.close > c2.open) {
+    hits.push({ name: "Dark Cloud Cover", bias: "down", note: "Green candle ka aadha hissa wapas gir gaya." });
+  }
+  if (body(c1) < body(c2) * 0.5 && c1.high < c2.high && c1.low > c2.low) {
+    hits.push({
+      name: bull(c2) ? "Bearish Harami / Inside Bar" : "Bullish Harami / Inside Bar",
+      bias: bull(c2) ? "down" : "up",
+      note: "Inside bar — momentum thanda, breakout ka intezaar.",
+    });
+  }
+  if (c1.high > c2.high && c1.low < c2.low) {
+    hits.push({
+      name: "Outside Bar (Engulfing range)",
+      bias: bull(c1) ? "up" : "down",
+      note: "Poora pichla range cover — volatility expansion.",
+    });
+  }
+  if (Math.abs(c1.high - c2.high) / range(c1) < 0.05 && !bull(c1)) {
+    hits.push({ name: "Tweezer Top", bias: "down", note: "Same level par double rejection." });
+  }
+  if (Math.abs(c1.low - c2.low) / range(c1) < 0.05 && bull(c1)) {
+    hits.push({ name: "Tweezer Bottom", bias: "up", note: "Same level par double support." });
+  }
+  return hits;
+}
