@@ -26,7 +26,10 @@ export const fetchGoldCandles = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<Candle[]> => {
     // 1) Bluesmind API (agar configured hai) — primary source
     const bm = await fetchBluesmind(data.interval);
-    if (bm && bm.length >= 60) return bm.slice(-300);
+    if (bm) {
+      const closed = onlyClosed(bm, data.interval);
+      if (closed.length >= 60) return closed.slice(-300);
+    }
 
     // 2) Fallback: Yahoo GC=F + spot calibration
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=${YF_INTERVAL[data.interval]}&range=${RANGE[data.interval]}`;
@@ -112,6 +115,14 @@ function onlyClosed(rows: Candle[], interval: string): Candle[] {
   const now = Date.now();
   return rows.filter((c) => c.openTime % ms === 0 && c.openTime + ms <= now);
 }
+
+/** Live spot price (display ke liye) — MT5 jaisa XAU/USD price. */
+export const fetchGoldSpot = createServerFn({ method: "GET" }).handler(
+  async (): Promise<{ price: number | null; at: number }> => ({
+    price: await fetchSpot(),
+    at: Date.now(),
+  }),
+);
 
 async function fetchSpot(): Promise<number | null> {
   try {
