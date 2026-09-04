@@ -63,11 +63,22 @@ function Dashboard() {
     refetchInterval: 20_000,
   });
 
+  const htfInterval = HTF[interval];
+  const { data: htfData } = useQuery({
+    queryKey: ["xauusd", "htf", htfInterval],
+    queryFn: () => getCandles({ data: { interval: htfInterval } }),
+    refetchInterval: 60_000,
+    enabled: htfInterval !== interval,
+  });
+
   const candles = data ?? [];
   const closes = candles.map((c) => c.close);
   const e9 = ema(closes, 9);
   const e21 = ema(closes, 21);
-  const heavy = candles.length >= 60 ? predict(candles) : null;
+  const heavy = useMemo(
+    () => (candles.length >= 60 ? predict(candles, htfData ?? undefined) : null),
+    [candles, htfData],
+  );
   const signal = heavy?.base ?? null;
   const last = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
