@@ -32,7 +32,21 @@ export type NextCandle = {
 
 export type Levels = { support: number; resistance: number };
 
-export type Backtest = { tested: number; correct: number; accuracy: number };
+export type BacktestSlice = { tested: number; correct: number; accuracy: number };
+
+export type Backtest = {
+  tested: number;
+  correct: number;
+  accuracy: number;
+  /** true = accuracy measured on data the weights were NOT tuned on (honest) */
+  outOfSample: boolean;
+  /** accuracy only on signals above the tuned confidence threshold */
+  highConf: BacktestSlice & { threshold: number };
+  /** accuracy split by market regime (out-of-sample) */
+  byRegime: Record<string, BacktestSlice>;
+  /** longest run of correct calls in the test window */
+  bestStreak: number;
+};
 
 export type Factor = {
   key: string;
@@ -60,6 +74,10 @@ export type HeavySignal = {
   patterns: PatternHit[];
   regime: Regime;
   quality: "HIGH" | "MEDIUM" | "LOW";
+  /** TRADE = signal is above the tuned confidence threshold; WAIT = skip this candle */
+  advice: "TRADE" | "WAIT";
+  /** tuned |score| threshold required for a tradeable call */
+  threshold: number;
   agreement: number;
   markov: { prob: number | null; samples: number };
   extras: {
@@ -304,15 +322,32 @@ function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key:
   return out;
 }
 
-/** Per-factor rolling hit rate → adaptive weight multiplier. */
-function factorHitRates(ctx: Ctx, lookback: number): Record<string, { hit: number | null; n: number }> {
+/** Memoised factor values per candle index (heavy: patterns + markov). */
+function makeFactorCache(ctx: Ctx) {
+  const cache = new Map<number, Array<{ key: string; label: string; value: number }>>();
+  return (i: number) => {
+    let v = cache.get(i);
+    if (!v) {
+      v = factorValues(ctx, i, null);
+      cache.set(i, v);
+    }
+    return v;
+  };
+}
+
+/** Per-factor hit rate over an index range [from, to) → adaptive weight multiplier. */
+function factorHitRates(
+  ctx: Ctx,
+  from: number,
+  to: number,
+  fv: (i: number) => Array<{ key: string; label: string; value: number }>,
+): Record<string, { hit: number | null; n: number }> {
   const stats: Record<string, { correct: number; n: number }> = {};
-  const start = Math.max(60, ctx.candles.length - lookback - 1);
-  for (let i = start; i < ctx.candles.length - 1; i++) {
+  for (let i = Math.max(60, from); i < Math.min(to, ctx.candles.length - 1); i++) {
     const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
     if (actual === 0) continue;
-    for (const f of factorValues(ctx, i, null)) {
+    for (const f of fv(i)) {
       if (Math.abs(f.value) < 0.1) continue;
       stats[f.key] ??= { correct: 0, n: 0 };
       stats[f.key]!.n++;
@@ -361,20 +396,115 @@ function scoreFrom(
   };
 }
 
-function backtest(ctx: Ctx, rates: Record<string, { hit: number | null; n: number }>, lookback = 120): Backtest {
+const THRESHOLDS = [0.06, 0.1, 0.14, 0.18, 0.22, 0.28, 0.34, 0.42];
+
+/**
+ * Walk-forward evaluation: weights are tuned on the older half of the window and
+ * scored on the newer half, so the reported accuracy is genuinely out-of-sample.
+ * Also tunes the confidence threshold on the train half only.
+ */
+function walkForward(
+  ctx: Ctx,
+  fv: (i: number) => Array<{ key: string; label: string; value: number }>,
+  lookback = 320,
+): { bt: Backtest; rates: Record<string, { hit: number | null; n: number }>; threshold: number } {
+  const n = ctx.candles.length;
+  const end = n - 1;
+  const start = Math.max(60, end - lookback);
+  const usable = end - start;
+
+  // Not enough history for a split → single in-sample pass.
+  if (usable < 60) {
+    const rates = factorHitRates(ctx, start, end, fv);
+    const slice = evaluate(ctx, fv, rates, start, end, 0.08);
+    return {
+      bt: {
+        ...slice.overall,
+        outOfSample: false,
+        highConf: { ...slice.overall, threshold: 0.08 },
+        byRegime: slice.byRegime,
+        bestStreak: slice.bestStreak,
+      },
+      rates,
+      threshold: 0.08,
+    };
+  }
+
+  const mid = start + Math.floor(usable * 0.55);
+  const trainRates = factorHitRates(ctx, start, mid, fv);
+
+  // Tune the threshold on the train half only.
+  let threshold = 0.08;
+  let bestScore = -Infinity;
+  for (const t of THRESHOLDS) {
+    const r = evaluate(ctx, fv, trainRates, start, mid, t).overall;
+    if (r.tested < 12) continue;
+    // prefer accuracy, mildly reward sample size so we don't overfit a tiny slice
+    const s = r.accuracy + Math.min(6, r.tested / 8);
+    if (s > bestScore) {
+      bestScore = s;
+      threshold = t;
+    }
+  }
+
+  const test = evaluate(ctx, fv, trainRates, mid, end, 0.06);
+  const testHigh = evaluate(ctx, fv, trainRates, mid, end, threshold);
+
+  // Live weights use all available history (train + test).
+  const rates = factorHitRates(ctx, start, end, fv);
+
+  return {
+    bt: {
+      ...test.overall,
+      outOfSample: true,
+      highConf: { ...testHigh.overall, threshold },
+      byRegime: test.byRegime,
+      bestStreak: test.bestStreak,
+    },
+    rates,
+    threshold,
+  };
+}
+
+function evaluate(
+  ctx: Ctx,
+  fv: (i: number) => Array<{ key: string; label: string; value: number }>,
+  rates: Record<string, { hit: number | null; n: number }>,
+  from: number,
+  to: number,
+  minScore: number,
+): { overall: BacktestSlice; byRegime: Record<string, BacktestSlice>; bestStreak: number } {
   let tested = 0;
   let correct = 0;
-  const start = Math.max(60, ctx.candles.length - lookback - 1);
-  for (let i = start; i < ctx.candles.length - 1; i++) {
-    const { score } = scoreFrom(factorValues(ctx, i, null), rates);
-    if (Math.abs(score) < 0.08) continue;
+  let streak = 0;
+  let bestStreak = 0;
+  const byRegime: Record<string, BacktestSlice> = {};
+  for (let i = Math.max(60, from); i < Math.min(to, ctx.candles.length - 1); i++) {
+    const { score } = scoreFrom(fv(i), rates);
+    if (Math.abs(score) < minScore) continue;
     const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
     if (actual === 0) continue;
+    const hit = Math.sign(score) === actual;
     tested++;
-    if (Math.sign(score) === actual) correct++;
+    if (hit) {
+      correct++;
+      streak++;
+      if (streak > bestStreak) bestStreak = streak;
+    } else {
+      streak = 0;
+    }
+    const reg = detectRegime(ctx, i);
+    byRegime[reg] ??= { tested: 0, correct: 0, accuracy: 0 };
+    byRegime[reg]!.tested++;
+    if (hit) byRegime[reg]!.correct++;
   }
-  return { tested, correct, accuracy: tested ? (correct / tested) * 100 : 0 };
+  for (const v of Object.values(byRegime)) v.accuracy = v.tested ? (v.correct / v.tested) * 100 : 0;
+  return {
+    overall: { tested, correct, accuracy: tested ? (correct / tested) * 100 : 0 },
+    byRegime,
+    bestStreak,
+  };
 }
 
 /** Higher timeframe bias in [-1,1] from a second candle series. */
@@ -425,24 +555,42 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
   const i = candles.length - 1;
   const price = ctx.closes[i]!;
 
-  const rates = factorHitRates(ctx, 150);
+  const fv = makeFactorCache(ctx);
+  const { bt, rates, threshold } = walkForward(ctx, fv, 320);
   const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
   const { score, factors, agreement } = scoreFrom(factorValues(ctx, i, htfBias), rates);
 
   const base = analyze(candles);
-  const bt = backtest(ctx, rates, 120);
   const regime = detectRegime(ctx, i);
   const mk = markovUpProbability(candles, 2);
 
   const a = ctx.atr[i] ?? price * 0.001;
   const strength = Math.min(1, Math.abs(score) / 0.55);
-  const btBias = bt.tested >= 12 ? (bt.accuracy - 50) / 100 : 0;
+
+  // Calibration: prefer the measured out-of-sample accuracy of the bucket this
+  // signal actually falls into (high-confidence / regime), not a generic guess.
+  const strong = Math.abs(score) >= threshold;
+  const regimeSlice = bt.byRegime[regime];
+  const buckets: Array<{ acc: number; n: number; w: number }> = [];
+  if (strong && bt.highConf.tested >= 12) buckets.push({ acc: bt.highConf.accuracy, n: bt.highConf.tested, w: 1.2 });
+  if (regimeSlice && regimeSlice.tested >= 12) buckets.push({ acc: regimeSlice.accuracy, n: regimeSlice.tested, w: 1 });
+  if (bt.tested >= 12) buckets.push({ acc: bt.accuracy, n: bt.tested, w: 0.8 });
+  const measured =
+    buckets.length
+      ? buckets.reduce((s, b) => s + b.acc * b.w, 0) / buckets.reduce((s, b) => s + b.w, 0)
+      : null;
+
   const agreeBonus = (agreement - 55) / 100;
   const regimePenalty = regime === "VOLATILE" ? 4 : regime === "RANGE" ? 2 : 0;
+  const raw = 50 + strength * 22 + agreeBonus * 10 - regimePenalty + (strong ? 3 : -6);
+  // Blend model confidence with the historically measured edge (shrunk by sample size).
+  const shrink = measured == null ? 0 : Math.min(0.65, bt.highConf.tested / 90);
   const probability = Math.max(
-    50,
-    Math.min(93, 50 + strength * 28 + btBias * 18 + agreeBonus * 12 - regimePenalty),
+    45,
+    Math.min(92, measured == null ? raw : raw * (1 - shrink) + measured * shrink),
   );
+  const advice: HeavySignal["advice"] = strong && probability >= 58 && regime !== "VOLATILE" ? "TRADE" : "WAIT";
+
 
   const direction: NextCandle["direction"] = score >= 0 ? "UP" : "DOWN";
   const open = price;
