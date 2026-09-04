@@ -400,6 +400,69 @@ function Dashboard() {
         </section>
       </div>
 
+      <section className="panel p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <Bot className="size-5 text-primary" /> AI Second Review
+          </h2>
+          {reviewLoading && (
+            <span className="tick flex items-center gap-2 text-xs text-muted-foreground">
+              <Activity className="size-3.5 animate-pulse" /> AI signal review kar raha hai…
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Har naye signal par AI independent doosri raay deta hai — engine ke indicators, patterns aur levels dekh kar.
+        </p>
+
+        {reviewError && (
+          <p className="mt-4 text-sm text-destructive">
+            {(reviewErr as Error)?.message ?? "AI review fail ho gaya."}
+          </p>
+        )}
+
+        {review && (
+          <>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <span className={cn("text-3xl font-bold", aiTone)}>{review.verdict}</span>
+              <Badge variant="outline" className="tick">
+                Confidence: {review.confidence}%
+              </Badge>
+              <Badge
+                variant="outline"
+                className={cn("tick", review.agreesWithEngine ? "border-bull/50 text-bull" : "border-bear/50 text-bear")}
+              >
+                {review.agreesWithEngine ? "Engine se agree" : "Engine se disagree"}
+              </Badge>
+            </div>
+            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-foreground/10">
+              <div className={cn("h-full rounded-full bg-current", aiTone)} style={{ width: `${review.confidence}%` }} />
+            </div>
+            <div className="mt-5 grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg bg-secondary/50 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">AI reasoning</p>
+                <p className="mt-1 text-sm">{review.reason}</p>
+              </div>
+              <div className="rounded-lg bg-secondary/50 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Risk</p>
+                <p className="mt-1 text-sm">{review.risk}</p>
+              </div>
+            </div>
+            {!review.agreesWithEngine && (
+              <p className="mt-4 text-xs text-warn">
+                AI aur engine ka direction match nahi kar raha — is signal par trade avoid karna behtar hai.
+              </p>
+            )}
+          </>
+        )}
+
+        {!review && !reviewLoading && !reviewError && (
+          <p className="mt-4 text-sm text-muted-foreground">Signal ban jaye to AI review yahan aa jayega.</p>
+        )}
+      </section>
+
+
+
       <section className="panel flex items-start gap-3 border-warn/40 bg-warn/5 p-5">
         <TriangleAlert className="mt-0.5 size-5 shrink-0 text-warn" />
         <p className="text-sm text-muted-foreground">
