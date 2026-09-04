@@ -24,9 +24,15 @@ const YF_INTERVAL: Record<string, string> = {
 export const fetchGoldCandles = createServerFn({ method: "GET" })
   .inputValidator((data: unknown) => schema.parse(data))
   .handler(async ({ data }): Promise<Candle[]> => {
+    // 1) Bluesmind API (agar configured hai) — primary source
+    const bm = await fetchBluesmind(data.interval);
+    if (bm && bm.length >= 60) return bm.slice(-300);
+
+    // 2) Fallback: Yahoo GC=F + spot calibration
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=${YF_INTERVAL[data.interval]}&range=${RANGE[data.interval]}`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
     if (!res.ok) throw new Error(`Gold data load nahi hua (${res.status})`);
+
     const json = (await res.json()) as {
       chart: {
         result:
@@ -101,4 +107,99 @@ async function fetchSpot(): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Bluesmind API se XAU/USD candles. Configure via secrets:
+ *  BLUESMIND_API_URL — endpoint, optionally with {interval} / {symbol} placeholders
+ *  BLUESMIND_API_KEY — auth key (Authorization: Bearer + x-api-key dono bheje jaate hain)
+ * Response flexible parse hota hai: array, {data:[...]}, {candles:[...]}, {result:[...]}.
+ */
+async function fetchBluesmind(interval: string): Promise<Candle[] | null> {
+  const base = process.env["BLUESMIND_API_URL"];
+  const key = process.env["BLUESMIND_API_KEY"];
+  if (!base || !key) return null;
+  try {
+    let url = base.replace("{interval}", interval).replace("{symbol}", "XAUUSD");
+    if (!base.includes("{interval}")) {
+      url += `${url.includes("?") ? "&" : "?"}interval=${interval}&symbol=XAUUSD`;
+    }
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "x-api-key": key,
+        Accept: "application/json",
+        "User-Agent": "Mozilla/5.0",
+      },
+    });
+    if (!res.ok) return null;
+    const json: unknown = await res.json();
+    const rows = pickRows(json);
+    if (!rows) return null;
+    const out: Candle[] = [];
+    for (const row of rows) {
+      const c = toCandle(row);
+      if (c) out.push(c);
+    }
+    out.sort((a, b) => a.openTime - b.openTime);
+    return out.length >= 60 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+function pickRows(json: unknown): unknown[] | null {
+  if (Array.isArray(json)) return json;
+  if (json && typeof json === "object") {
+    const o = json as Record<string, unknown>;
+    for (const k of ["data", "candles", "result", "results", "values", "bars", "ohlc"]) {
+      const v = o[k];
+      if (Array.isArray(v)) return v;
+      if (v && typeof v === "object") {
+        const nested = pickRows(v);
+        if (nested) return nested;
+      }
+    }
+  }
+  return null;
+}
+
+function num(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function toCandle(row: unknown): Candle | null {
+  if (Array.isArray(row)) {
+    const [t, o, h, l, c, v] = row;
+    const open = num(o), high = num(h), low = num(l), close = num(c);
+    if (open == null || high == null || low == null || close == null) return null;
+    const time = normTime(t);
+    return { openTime: time, closeTime: time, open, high, low, close, volume: num(v) ?? 0 };
+  }
+  if (!row || typeof row !== "object") return null;
+  const r = row as Record<string, unknown>;
+  const open = num(r["open"] ?? r["o"] ?? r["Open"]);
+  const high = num(r["high"] ?? r["h"] ?? r["High"]);
+  const low = num(r["low"] ?? r["l"] ?? r["Low"]);
+  const close = num(r["close"] ?? r["c"] ?? r["Close"]);
+  if (open == null || high == null || low == null || close == null) return null;
+  const time = normTime(
+    r["time"] ?? r["timestamp"] ?? r["t"] ?? r["datetime"] ?? r["date"] ?? r["openTime"],
+  );
+  return { openTime: time, closeTime: time, open, high, low, close, volume: num(r["volume"] ?? r["v"]) ?? 0 };
+}
+
+function normTime(t: unknown): number {
+  const n = num(t);
+  if (n != null) return n > 1e12 ? n : n * 1000;
+  if (typeof t === "string") {
+    const parsed = Date.parse(t);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
 }
