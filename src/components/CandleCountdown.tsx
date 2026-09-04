@@ -36,7 +36,7 @@ export function CandleCountdown({
   compact = false,
 }: {
   interval: string;
-  lastOpenTime?: number;
+  lastOpenTime?: number | undefined;
   compact?: boolean;
 }) {
   const t = useNextCandleTime(interval, lastOpenTime);
