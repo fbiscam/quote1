@@ -347,6 +347,25 @@ function Dashboard() {
               </p>
             )}
 
+            {heavy && (
+              <p className="tick opacity-80">
+                Stability: <span className="font-semibold">{heavy.stability > 0 ? `${heavy.stability}%` : "—"}</span>
+                {heavy.shortWindowAccuracy != null
+                  ? ` · recent window ${heavy.shortWindowAccuracy.toFixed(1)}%`
+                  : ""}
+              </p>
+            )}
+
+            {heavy && heavy.analog.prob != null && (
+              <p className="tick opacity-80">
+                Historical analogs ({heavy.analog.matches}):{" "}
+                <span className="font-semibold">
+                  {(heavy.analog.prob * 100).toFixed(0)}% UP bias
+                </span>
+              </p>
+            )}
+
+
             {heavy && Object.keys(heavy.backtest.byRegime).length > 0 && (
               <div className="tick grid grid-cols-2 gap-1 pt-1 opacity-80">
                 {Object.entries(heavy.backtest.byRegime).map(([reg, s]) => (
