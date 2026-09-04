@@ -185,21 +185,15 @@ function Dashboard() {
       </header>
 
       <div className="panel flex flex-wrap items-center gap-3 px-5 py-4">
-        <span className="text-xs uppercase tracking-widest text-muted-foreground">Auto-selected best timeframe</span>
-        {scored.map((s) => (
-          <span
-            key={s.interval}
-            className={cn(
-              "tick rounded-md border px-2.5 py-1 text-xs",
-              s.interval === interval
-                ? "border-primary bg-primary/15 text-primary"
-                : "border-border text-muted-foreground opacity-60",
-            )}
-          >
-            {s.label} · {s.accuracy.toFixed(1)}%
-          </span>
-        ))}
+        <span className="text-xs uppercase tracking-widest text-muted-foreground">Fixed timeframe</span>
+        <span className="tick rounded-md border border-primary bg-primary/15 px-2.5 py-1 text-xs text-primary">
+          5 min · XAU/USD
+        </span>
+        <span className="tick rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground">
+          Live backtest accuracy: {accuracy.accuracy.toFixed(1)}% ({accuracy.tested} candles)
+        </span>
       </div>
+
 
       {isError && (
         <div className="panel p-4 text-sm text-destructive">{(error as Error)?.message ?? "Data load nahi hua."}</div>
