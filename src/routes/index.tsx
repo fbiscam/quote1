@@ -2,13 +2,14 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useMemo, useState } from "react";
-import { Activity, ArrowDownRight, ArrowUpRight, Minus, RefreshCw, TriangleAlert } from "lucide-react";
+import { Activity, ArrowDownRight, ArrowUpRight, Bot, Minus, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { CandleChart } from "@/components/CandleChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ema } from "@/lib/indicators";
 import { fetchGoldCandles } from "@/lib/gold.functions";
+import { aiReviewSignal } from "@/lib/ai-review.functions";
 import { predict } from "@/lib/predict";
 import { cn } from "@/lib/utils";
 
@@ -83,6 +84,71 @@ function Dashboard() {
   const last = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
   const changePct = last && prev ? ((last.close - prev.close) / prev.close) * 100 : 0;
+
+  // ---- AI second review: har naye signal (naya candle / badla direction) par auto chalta hai ----
+  const runAiReview = useServerFn(aiReviewSignal);
+  const reviewInput = useMemo(() => {
+    if (!heavy || !last) return null;
+    return {
+      interval,
+      price: Number(last.close.toFixed(2)),
+      direction: heavy.next.direction,
+      probability: heavy.next.probability,
+      score: heavy.score,
+      quality: heavy.quality,
+      regime: heavy.regime,
+      agreement: heavy.agreement,
+      patterns: heavy.patterns.map((p) => `${p.name} (${p.bias})`),
+      indicators: {
+        rsi14: heavy.base.rsi ?? null,
+        stochastic: heavy.stoch ?? null,
+        macdHist: heavy.macd.hist ?? null,
+        bollingerPctB: heavy.bb.pctB ?? null,
+        adx: heavy.extras.adx ?? null,
+        plusDI: heavy.extras.plusDI ?? null,
+        minusDI: heavy.extras.minusDI ?? null,
+        williamsR: heavy.extras.williamsR ?? null,
+        cci: heavy.extras.cci ?? null,
+        rocPct: heavy.extras.roc ?? null,
+        vwap: heavy.extras.vwap ?? null,
+        zscore: heavy.extras.zscore ?? null,
+        atrPct: heavy.base.atrPct ?? null,
+        htfBias: heavy.extras.htfBias ?? null,
+        markovUpProb: heavy.markov.prob ?? null,
+      },
+      levels: { support: heavy.levels.support ?? null, resistance: heavy.levels.resistance ?? null },
+      backtest: { accuracy: heavy.backtest.accuracy, tested: heavy.backtest.tested },
+      recentCloses: candles.slice(-20).map((c) => Number(c.close.toFixed(2))),
+    };
+  }, [heavy, last, interval, candles]);
+
+  const reviewKey = reviewInput
+    ? `${interval}:${last?.openTime}:${reviewInput.direction}:${reviewInput.probability}`
+    : "none";
+
+  const {
+    data: review,
+    isFetching: reviewLoading,
+    isError: reviewError,
+    error: reviewErr,
+  } = useQuery({
+    queryKey: ["ai-review", reviewKey],
+    queryFn: () => runAiReview({ data: reviewInput! }),
+    enabled: reviewInput !== null,
+    staleTime: 5 * 60_000,
+    gcTime: 10 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const aiTone =
+    review?.verdict === "UP"
+      ? "text-bull"
+      : review?.verdict === "DOWN"
+        ? "text-bear"
+        : "text-warn";
+
+
 
   const dir = heavy?.next.direction;
   const dirStyles =
@@ -333,6 +399,69 @@ function Dashboard() {
           </ul>
         </section>
       </div>
+
+      <section className="panel p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <Bot className="size-5 text-primary" /> AI Second Review
+          </h2>
+          {reviewLoading && (
+            <span className="tick flex items-center gap-2 text-xs text-muted-foreground">
+              <Activity className="size-3.5 animate-pulse" /> AI signal review kar raha hai…
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Har naye signal par AI independent doosri raay deta hai — engine ke indicators, patterns aur levels dekh kar.
+        </p>
+
+        {reviewError && (
+          <p className="mt-4 text-sm text-destructive">
+            {(reviewErr as Error)?.message ?? "AI review fail ho gaya."}
+          </p>
+        )}
+
+        {review && (
+          <>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <span className={cn("text-3xl font-bold", aiTone)}>{review.verdict}</span>
+              <Badge variant="outline" className="tick">
+                Confidence: {review.confidence}%
+              </Badge>
+              <Badge
+                variant="outline"
+                className={cn("tick", review.agreesWithEngine ? "border-bull/50 text-bull" : "border-bear/50 text-bear")}
+              >
+                {review.agreesWithEngine ? "Engine se agree" : "Engine se disagree"}
+              </Badge>
+            </div>
+            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-foreground/10">
+              <div className={cn("h-full rounded-full bg-current", aiTone)} style={{ width: `${review.confidence}%` }} />
+            </div>
+            <div className="mt-5 grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg bg-secondary/50 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">AI reasoning</p>
+                <p className="mt-1 text-sm">{review.reason}</p>
+              </div>
+              <div className="rounded-lg bg-secondary/50 p-3">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Risk</p>
+                <p className="mt-1 text-sm">{review.risk}</p>
+              </div>
+            </div>
+            {!review.agreesWithEngine && (
+              <p className="mt-4 text-xs text-warn">
+                AI aur engine ka direction match nahi kar raha — is signal par trade avoid karna behtar hai.
+              </p>
+            )}
+          </>
+        )}
+
+        {!review && !reviewLoading && !reviewError && (
+          <p className="mt-4 text-sm text-muted-foreground">Signal ban jaye to AI review yahan aa jayega.</p>
+        )}
+      </section>
+
+
 
       <section className="panel flex items-start gap-3 border-warn/40 bg-warn/5 p-5">
         <TriangleAlert className="mt-0.5 size-5 shrink-0 text-warn" />
