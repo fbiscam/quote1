@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Activity, ArrowDownRight, ArrowUpRight, Bot, Minus, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { CandleChart } from "@/components/CandleChart";
@@ -56,24 +56,38 @@ export const Route = createFileRoute("/")({
 });
 
 function Dashboard() {
-  const [interval, setInterval] = useState<Interval>("5m");
   const getCandles = useServerFn(fetchGoldCandles);
 
-  const { data, isLoading, isError, error, refetch, isFetching, dataUpdatedAt } = useQuery({
-    queryKey: ["xauusd", interval],
-    queryFn: () => getCandles({ data: { interval } }),
-    refetchInterval: 20_000,
+  // Saare timeframes load karke jis ki live backtest accuracy sab se high ho, wohi auto-select hota hai.
+  const results = useQueries({
+    queries: INTERVALS.map((i) => ({
+      queryKey: ["xauusd", i.value],
+      queryFn: () => getCandles({ data: { interval: i.value } }),
+      refetchInterval: 20_000,
+    })),
   });
+
+  const scored = useMemo(() => {
+    return INTERVALS.map((i, idx) => {
+      const c = results[idx]?.data ?? [];
+      const p = c.length >= 60 ? predict(c) : null;
+      return { interval: i.value as Interval, label: i.label, candles: c, accuracy: p?.backtest.accuracy ?? 0, tested: p?.backtest.tested ?? 0 };
+    });
+  }, [results.map((r) => r.dataUpdatedAt).join(","), results]);
+
+  const best =
+    [...scored].sort((a, b) => b.accuracy - a.accuracy || b.tested - a.tested)[0] ?? scored[0]!;
+  const interval = best.interval;
+  const bestIdx = INTERVALS.findIndex((i) => i.value === interval);
+  const active = results[bestIdx]!;
+  const { isLoading, isError, error, isFetching, dataUpdatedAt } = active;
+  const refetch = () => results.forEach((r) => r.refetch());
 
   const htfInterval = HTF[interval];
-  const { data: htfData } = useQuery({
-    queryKey: ["xauusd", "htf", htfInterval],
-    queryFn: () => getCandles({ data: { interval: htfInterval } }),
-    refetchInterval: 60_000,
-    enabled: htfInterval !== interval,
-  });
+  const htfIdx = INTERVALS.findIndex((i) => i.value === htfInterval);
+  const htfData = htfIdx === bestIdx ? undefined : results[htfIdx]?.data;
 
-  const candles = data ?? [];
+  const candles = best.candles;
   const closes = candles.map((c) => c.close);
   const e9 = ema(closes, 9);
   const e21 = ema(closes, 21);
@@ -176,17 +190,20 @@ function Dashboard() {
         </Button>
       </header>
 
-      <div className="flex flex-wrap gap-2">
-        {INTERVALS.map((i) => (
-          <Button
-            key={i.value}
-            size="sm"
-            variant={interval === i.value ? "default" : "outline"}
-            onClick={() => setInterval(i.value)}
-            className="tick"
+      <div className="panel flex flex-wrap items-center gap-3 px-5 py-4">
+        <span className="text-xs uppercase tracking-widest text-muted-foreground">Auto-selected best timeframe</span>
+        {scored.map((s) => (
+          <span
+            key={s.interval}
+            className={cn(
+              "tick rounded-md border px-2.5 py-1 text-xs",
+              s.interval === interval
+                ? "border-primary bg-primary/15 text-primary"
+                : "border-border text-muted-foreground opacity-60",
+            )}
           >
-            {i.label}
-          </Button>
+            {s.label} · {s.accuracy.toFixed(1)}%
+          </span>
         ))}
       </div>
 
