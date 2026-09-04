@@ -90,7 +90,7 @@ Independent second opinion do: agli candle UP, DOWN ya NEUTRAL? Sirf JSON return
       verdict,
       confidence,
       agreesWithEngine: verdict === data.direction.toUpperCase(),
-      reason: String(parsed?.["reason"] ?? text.slice(0, 220) || "AI ne reason nahi diya."),
+      reason: String(parsed?.["reason"] ?? (text.slice(0, 220) || "AI ne reason nahi diya.")),
       risk: String(parsed?.["risk"] ?? "Volatility spike aur news events signal invalid kar sakte hain."),
     };
   });
