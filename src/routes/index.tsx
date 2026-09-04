@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { Activity, ArrowDownRight, ArrowUpRight, Bot, Minus, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { CandleChart } from "@/components/CandleChart";
+import { CandleCountdown } from "@/components/CandleCountdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ema } from "@/lib/indicators";
@@ -214,6 +215,7 @@ function Dashboard() {
               <span className="flex items-center gap-1.5">
                 <span className="inline-block h-0.5 w-4 border-t border-dashed border-current" /> Next candle
               </span>
+              <CandleCountdown interval={interval} lastOpenTime={last?.openTime} compact />
             </div>
           </div>
         </div>
@@ -245,6 +247,9 @@ function Dashboard() {
           <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-foreground/10">
             <div className="h-full rounded-full bg-current" style={{ width: `${heavy?.next.probability ?? 0}%` }} />
           </div>
+
+          <CandleCountdown interval={interval} lastOpenTime={last?.openTime} />
+
 
           <dl className="tick mt-6 grid grid-cols-2 gap-3 text-xs text-foreground/80">
             <div>
