@@ -318,15 +318,32 @@ function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key:
   return out;
 }
 
-/** Per-factor rolling hit rate → adaptive weight multiplier. */
-function factorHitRates(ctx: Ctx, lookback: number): Record<string, { hit: number | null; n: number }> {
+/** Memoised factor values per candle index (heavy: patterns + markov). */
+function makeFactorCache(ctx: Ctx) {
+  const cache = new Map<number, Array<{ key: string; label: string; value: number }>>();
+  return (i: number) => {
+    let v = cache.get(i);
+    if (!v) {
+      v = factorValues(ctx, i, null);
+      cache.set(i, v);
+    }
+    return v;
+  };
+}
+
+/** Per-factor hit rate over an index range [from, to) → adaptive weight multiplier. */
+function factorHitRates(
+  ctx: Ctx,
+  from: number,
+  to: number,
+  fv: (i: number) => Array<{ key: string; label: string; value: number }>,
+): Record<string, { hit: number | null; n: number }> {
   const stats: Record<string, { correct: number; n: number }> = {};
-  const start = Math.max(60, ctx.candles.length - lookback - 1);
-  for (let i = start; i < ctx.candles.length - 1; i++) {
+  for (let i = Math.max(60, from); i < Math.min(to, ctx.candles.length - 1); i++) {
     const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
     if (actual === 0) continue;
-    for (const f of factorValues(ctx, i, null)) {
+    for (const f of fv(i)) {
       if (Math.abs(f.value) < 0.1) continue;
       stats[f.key] ??= { correct: 0, n: 0 };
       stats[f.key]!.n++;
