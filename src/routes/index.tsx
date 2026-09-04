@@ -58,36 +58,30 @@ export const Route = createFileRoute("/")({
 function Dashboard() {
   const getCandles = useServerFn(fetchGoldCandles);
 
-  // Saare timeframes load karke jis ki live backtest accuracy sab se high ho, wohi auto-select hota hai.
+  // Sirf ek fixed timeframe: 5 minute (signal quality + noise ka best balance).
+  const interval: Interval = "5m";
+  const htfInterval = HTF[interval];
+
   const results = useQueries({
-    queries: INTERVALS.map((i) => ({
-      queryKey: ["xauusd", i.value],
-      queryFn: () => getCandles({ data: { interval: i.value } }),
+    queries: [interval, htfInterval].map((iv) => ({
+      queryKey: ["xauusd", iv],
+      queryFn: () => getCandles({ data: { interval: iv } }),
       refetchInterval: 20_000,
     })),
   });
 
-  const scored = useMemo(() => {
-    return INTERVALS.map((i, idx) => {
-      const c = results[idx]?.data ?? [];
-      const p = c.length >= 60 ? predict(c) : null;
-      return { interval: i.value as Interval, label: i.label, candles: c, accuracy: p?.backtest.accuracy ?? 0, tested: p?.backtest.tested ?? 0 };
-    });
-  }, [results.map((r) => r.dataUpdatedAt).join(","), results]);
-
-  const best =
-    [...scored].sort((a, b) => b.accuracy - a.accuracy || b.tested - a.tested)[0] ?? scored[0]!;
-  const interval = best.interval;
-  const bestIdx = INTERVALS.findIndex((i) => i.value === interval);
-  const active = results[bestIdx]!;
+  const active = results[0]!;
   const { isLoading, isError, error, isFetching, dataUpdatedAt } = active;
   const refetch = () => results.forEach((r) => r.refetch());
 
-  const htfInterval = HTF[interval];
-  const htfIdx = INTERVALS.findIndex((i) => i.value === htfInterval);
-  const htfData = htfIdx === bestIdx ? undefined : results[htfIdx]?.data;
+  const htfData = results[1]?.data;
+  const candles = useMemo(() => active.data ?? [], [active.data]);
+  const accuracy = useMemo(
+    () => (candles.length >= 60 ? predict(candles)?.backtest ?? { accuracy: 0, tested: 0 } : { accuracy: 0, tested: 0 }),
+    [candles],
+  );
 
-  const candles = best.candles;
+
   const closes = candles.map((c) => c.close);
   const e9 = ema(closes, 9);
   const e21 = ema(closes, 21);
@@ -191,21 +185,15 @@ function Dashboard() {
       </header>
 
       <div className="panel flex flex-wrap items-center gap-3 px-5 py-4">
-        <span className="text-xs uppercase tracking-widest text-muted-foreground">Auto-selected best timeframe</span>
-        {scored.map((s) => (
-          <span
-            key={s.interval}
-            className={cn(
-              "tick rounded-md border px-2.5 py-1 text-xs",
-              s.interval === interval
-                ? "border-primary bg-primary/15 text-primary"
-                : "border-border text-muted-foreground opacity-60",
-            )}
-          >
-            {s.label} · {s.accuracy.toFixed(1)}%
-          </span>
-        ))}
+        <span className="text-xs uppercase tracking-widest text-muted-foreground">Fixed timeframe</span>
+        <span className="tick rounded-md border border-primary bg-primary/15 px-2.5 py-1 text-xs text-primary">
+          5 min · XAU/USD
+        </span>
+        <span className="tick rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground">
+          Live backtest accuracy: {accuracy.accuracy.toFixed(1)}% ({accuracy.tested} candles)
+        </span>
       </div>
+
 
       {isError && (
         <div className="panel p-4 text-sm text-destructive">{(error as Error)?.message ?? "Data load nahi hua."}</div>
