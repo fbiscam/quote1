@@ -696,6 +696,7 @@ function walkForward(
   threshold: number;
   stability: number;
   shortAcc: number | null;
+  model: LogitModel | null;
 } {
   const n = ctx.candles.length;
   const end = n - 1;
@@ -705,7 +706,7 @@ function walkForward(
   // Not enough history for a split → single in-sample pass.
   if (usable < 60) {
     const rates = factorHitRates(ctx, start, end, fv);
-    const slice = evaluate(ctx, fv, rates, start, end, 0.08);
+    const slice = evaluate(ctx, fv, rates, start, end, 0.08, null);
     return {
       bt: {
         ...slice.overall,
@@ -718,17 +719,20 @@ function walkForward(
       threshold: 0.08,
       stability: 0,
       shortAcc: null,
+      model: null,
     };
   }
 
   const mid = start + Math.floor(usable * 0.55);
   const trainRates = factorHitRates(ctx, start, mid, fv);
+  // Learned model trained ONLY on the train half → test slice stays out-of-sample.
+  const trainModel = trainLogistic(ctx, fv, start, mid);
 
   // Tune the threshold on the train half only.
   let threshold = 0.08;
   let bestScore = -Infinity;
   for (const t of THRESHOLDS) {
-    const r = evaluate(ctx, fv, trainRates, start, mid, t).overall;
+    const r = evaluate(ctx, fv, trainRates, start, mid, t, trainModel).overall;
     if (r.tested < 12) continue;
     // prefer accuracy, mildly reward sample size so we don't overfit a tiny slice
     const s = r.accuracy + Math.min(6, r.tested / 8);
@@ -738,20 +742,21 @@ function walkForward(
     }
   }
 
-  const test = evaluate(ctx, fv, trainRates, mid, end, 0.06);
-  const testHigh = evaluate(ctx, fv, trainRates, mid, end, threshold);
+  const test = evaluate(ctx, fv, trainRates, mid, end, 0.06, trainModel);
+  const testHigh = evaluate(ctx, fv, trainRates, mid, end, threshold, trainModel);
 
   // Second, shorter validation window (most recent third) → regime-drift check.
   const shortFrom = end - Math.max(30, Math.floor(usable * 0.25));
-  const shortSlice = evaluate(ctx, fv, trainRates, Math.max(mid, shortFrom), end, threshold).overall;
+  const shortSlice = evaluate(ctx, fv, trainRates, Math.max(mid, shortFrom), end, threshold, trainModel).overall;
   const shortAcc = shortSlice.tested >= 8 ? shortSlice.accuracy : null;
   const stability =
     shortAcc == null || testHigh.overall.tested < 8
       ? 0
       : Math.max(0, 100 - Math.abs(shortAcc - testHigh.overall.accuracy) * 2.5);
 
-  // Live weights use all available history (train + test).
+  // Live weights + live model use all available history (train + test).
   const rates = factorHitRates(ctx, start, end, fv);
+  const model = trainLogistic(ctx, fv, start, end) ?? trainModel;
 
   return {
     bt: {
@@ -765,9 +770,11 @@ function walkForward(
     threshold,
     stability,
     shortAcc,
+    model,
   };
 
 }
+
 
 function evaluate(
   ctx: Ctx,
