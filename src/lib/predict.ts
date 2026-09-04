@@ -650,6 +650,8 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
     patterns,
     regime,
     quality,
+    advice,
+    threshold,
     agreement,
     markov: mk,
     extras: {
