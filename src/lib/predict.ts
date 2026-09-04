@@ -868,15 +868,23 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
   const price = ctx.closes[i]!;
 
   const fv = makeFactorCache(ctx);
-  const { bt, rates, threshold, stability, shortAcc } = walkForward(ctx, fv, 320);
+  const { bt, rates, threshold, stability, shortAcc, model: learned } = walkForward(ctx, fv, 320);
   const analog = analogProbability(ctx, i);
-
-  const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
-  const { score, factors, agreement } = scoreFrom(factorValues(ctx, i, htfBias), rates);
 
   const base = analyze(candles);
   const regime = detectRegime(ctx, i);
   const mk = markovUpProbability(candles, 2);
+
+  // Regime specialist: sirf isi regime ke bars par trained second learner.
+  const regimeModel = trainLogistic(ctx, fv, Math.max(60, i - 320), i, regime);
+
+  const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
+  const liveVals = factorValues(ctx, i, htfBias);
+  const { score, factors, agreement, modelProb: generalProb } = scoreFrom(liveVals, rates, learned);
+  const regimeProb = logisticProb(liveVals, regimeModel);
+  const modelProb =
+    generalProb == null ? regimeProb : regimeProb == null ? generalProb : generalProb * 0.6 + regimeProb * 0.4;
+
 
   const a = ctx.atr[i] ?? price * 0.001;
   const strength = Math.min(1, Math.abs(score) / 0.55);
