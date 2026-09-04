@@ -32,7 +32,21 @@ export type NextCandle = {
 
 export type Levels = { support: number; resistance: number };
 
-export type Backtest = { tested: number; correct: number; accuracy: number };
+export type BacktestSlice = { tested: number; correct: number; accuracy: number };
+
+export type Backtest = {
+  tested: number;
+  correct: number;
+  accuracy: number;
+  /** true = accuracy measured on data the weights were NOT tuned on (honest) */
+  outOfSample: boolean;
+  /** accuracy only on signals above the tuned confidence threshold */
+  highConf: BacktestSlice & { threshold: number };
+  /** accuracy split by market regime (out-of-sample) */
+  byRegime: Record<string, BacktestSlice>;
+  /** longest run of correct calls in the test window */
+  bestStreak: number;
+};
 
 export type Factor = {
   key: string;
