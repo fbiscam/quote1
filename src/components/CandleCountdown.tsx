@@ -12,7 +12,7 @@ function pad(n: number) {
   return n.toString().padStart(2, "0");
 }
 
-export function useNextCandleTime(interval: string, lastOpenTime?: number) {
+export function useNextCandleTime(interval: string, _lastOpenTime?: number) {
   const step = MS[interval] ?? 300_000;
   const [now, setNow] = useState<number | null>(null);
 
@@ -23,9 +23,9 @@ export function useNextCandleTime(interval: string, lastOpenTime?: number) {
   }, []);
 
   if (now == null) return null;
-  const base = lastOpenTime != null ? lastOpenTime + step : Math.ceil(now / step) * step;
-  let closeAt = base;
-  while (closeAt <= now) closeAt += step;
+  // Wall-clock aligned boundary (candles open/close on exact interval marks in UTC).
+  let closeAt = Math.ceil(now / step) * step;
+  if (closeAt <= now) closeAt += step;
   const remaining = Math.max(0, closeAt - now);
   return { closeAt, remaining, step };
 }
