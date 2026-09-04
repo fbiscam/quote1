@@ -85,6 +85,71 @@ function Dashboard() {
   const prev = candles[candles.length - 2];
   const changePct = last && prev ? ((last.close - prev.close) / prev.close) * 100 : 0;
 
+  // ---- AI second review: har naye signal (naya candle / badla direction) par auto chalta hai ----
+  const runAiReview = useServerFn(aiReviewSignal);
+  const reviewInput = useMemo(() => {
+    if (!heavy || !last) return null;
+    return {
+      interval,
+      price: Number(last.close.toFixed(2)),
+      direction: heavy.next.direction,
+      probability: heavy.next.probability,
+      score: heavy.score,
+      quality: heavy.quality,
+      regime: heavy.regime,
+      agreement: heavy.agreement,
+      patterns: heavy.patterns.map((p) => `${p.name} (${p.bias})`),
+      indicators: {
+        rsi14: heavy.base.rsi ?? null,
+        stochastic: heavy.stoch ?? null,
+        macdHist: heavy.macd.hist ?? null,
+        bollingerPctB: heavy.bb.pctB ?? null,
+        adx: heavy.extras.adx ?? null,
+        plusDI: heavy.extras.plusDI ?? null,
+        minusDI: heavy.extras.minusDI ?? null,
+        williamsR: heavy.extras.williamsR ?? null,
+        cci: heavy.extras.cci ?? null,
+        rocPct: heavy.extras.roc ?? null,
+        vwap: heavy.extras.vwap ?? null,
+        zscore: heavy.extras.zscore ?? null,
+        atrPct: heavy.base.atrPct ?? null,
+        htfBias: heavy.extras.htfBias ?? null,
+        markovUpProb: heavy.markov.prob ?? null,
+      },
+      levels: { support: heavy.levels.support ?? null, resistance: heavy.levels.resistance ?? null },
+      backtest: { accuracy: heavy.backtest.accuracy, tested: heavy.backtest.tested },
+      recentCloses: candles.slice(-20).map((c) => Number(c.close.toFixed(2))),
+    };
+  }, [heavy, last, interval, candles]);
+
+  const reviewKey = reviewInput
+    ? `${interval}:${last?.openTime}:${reviewInput.direction}:${reviewInput.probability}`
+    : "none";
+
+  const {
+    data: review,
+    isFetching: reviewLoading,
+    isError: reviewError,
+    error: reviewErr,
+  } = useQuery({
+    queryKey: ["ai-review", reviewKey],
+    queryFn: () => runAiReview({ data: reviewInput! }),
+    enabled: reviewInput !== null,
+    staleTime: 5 * 60_000,
+    gcTime: 10 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const aiTone =
+    review?.verdict === "UP"
+      ? "text-bull"
+      : review?.verdict === "DOWN"
+        ? "text-bear"
+        : "text-warn";
+
+
+
   const dir = heavy?.next.direction;
   const dirStyles =
     dir === "UP" ? "border-bull/40 bg-bull/10 text-bull" : dir === "DOWN" ? "border-bear/40 bg-bear/10 text-bear" : "border-warn/40 bg-warn/10 text-warn";
