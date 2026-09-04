@@ -207,6 +207,24 @@ function Dashboard() {
             </div>
           </dl>
 
+          <div className="mt-5 flex flex-wrap gap-2 text-[11px]">
+            <Badge variant="outline" className="tick border-current/40">
+              Signal quality: {heavy?.quality ?? "—"}
+            </Badge>
+            <Badge variant="outline" className="tick border-current/40">
+              Regime: {heavy ? REGIME_LABEL[heavy.regime] : "—"}
+            </Badge>
+            <Badge variant="outline" className="tick border-current/40">
+              Agreement: {heavy ? `${heavy.agreement.toFixed(0)}%` : "—"}
+            </Badge>
+            <Badge variant="outline" className="tick border-current/40">
+              HTF: {heavy?.extras.htfBias == null ? "—" : heavy.extras.htfBias > 0.1 ? "Bullish" : heavy.extras.htfBias < -0.1 ? "Bearish" : "Flat"}
+            </Badge>
+            <Badge variant="outline" className="tick border-current/40">
+              Markov: {heavy?.markov.prob == null ? "—" : `${(heavy.markov.prob * 100).toFixed(0)}% up`}
+            </Badge>
+          </div>
+
           <div className="mt-5 rounded-lg bg-foreground/5 p-3 text-xs">
             <p className="opacity-70">Backtest (last {heavy?.backtest.tested ?? 0} signals)</p>
             <p className="tick text-lg font-semibold">
