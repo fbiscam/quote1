@@ -78,8 +78,15 @@ export type HeavySignal = {
   advice: "TRADE" | "WAIT";
   /** tuned |score| threshold required for a tradeable call */
   threshold: number;
+  /** consistency of accuracy across short + long validation windows (0-100) */
+  stability: number;
+  /** accuracy of an independent short validation window (%) */
+  shortWindowAccuracy: number | null;
+  /** historical analog (kNN) match result for the current setup */
+  analog: { prob: number | null; matches: number };
   agreement: number;
   markov: { prob: number | null; samples: number };
+
   extras: {
     adx: number | null;
     plusDI: number | null;
@@ -186,6 +193,57 @@ function buildContext(candles: Candle[]) {
 
 const clamp = (v: number) => Math.max(-1, Math.min(1, v));
 
+/**
+ * Historical analog matcher (kNN): current normalised N-bar shape ko past ke
+ * sab shapes se compare karta hai aur k closest matches ki next-candle direction
+ * ka weighted average leta hai. Strictly backward-looking.
+ */
+function analogProbability(
+  ctx: Ctx,
+  i: number,
+  len = 6,
+  k = 15,
+): { prob: number | null; matches: number } {
+  if (i < len + 40) return { prob: null, matches: 0 };
+  const shape = (idx: number): number[] | null => {
+    const seg = ctx.candles.slice(idx - len + 1, idx + 1);
+    if (seg.length < len) return null;
+    const base = seg[0]!.close;
+    const a = ctx.atr[idx];
+    const scale = a && a > 0 ? a : base * 0.001;
+    const out: number[] = [];
+    for (const c of seg) {
+      out.push((c.close - base) / scale, (c.high - c.low) / scale, (c.close - c.open) / scale);
+    }
+    return out;
+  };
+  const cur = shape(i);
+  if (!cur) return { prob: null, matches: 0 };
+  const scored: Array<{ d: number; dir: number }> = [];
+  for (let j = len + 5; j < i - 1; j++) {
+    const s = shape(j);
+    if (!s) continue;
+    let d = 0;
+    for (let q = 0; q < cur.length; q++) d += (cur[q]! - s[q]!) ** 2;
+    const nxt = ctx.candles[j + 1]!;
+    const dir = Math.sign(nxt.close - nxt.open);
+    if (dir === 0) continue;
+    scored.push({ d: Math.sqrt(d), dir });
+  }
+  if (scored.length < 20) return { prob: null, matches: scored.length };
+  scored.sort((a, b) => a.d - b.d);
+  const top = scored.slice(0, Math.min(k, scored.length));
+  let wsum = 0;
+  let ups = 0;
+  for (const t of top) {
+    const w = 1 / (1 + t.d);
+    wsum += w;
+    if (t.dir > 0) ups += w;
+  }
+  return { prob: wsum > 0 ? ups / wsum : null, matches: top.length };
+}
+
+
 /** Base weights per factor — tuned by rolling hit rate at runtime. */
 const BASE_WEIGHTS: Record<string, number> = {
   emaFast: 2,
@@ -219,6 +277,8 @@ const BASE_WEIGHTS: Record<string, number> = {
   gap: 0.7,
   ribbon: 1.2,
   emaStack: 1.4,
+  analog: 2.2,
+
 };
 
 function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key: string; label: string; value: number }> {
@@ -452,7 +512,14 @@ function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key:
     else if (dnStack) push("emaStack", "EMA stack fully bearish", -0.9);
   }
 
+  // 11) Historical analog matcher (kNN on normalised candle shape)
+  {
+    const an = analogProbability(ctx, i);
+    if (an.prob != null) push("analog", `Historical analogs (${an.matches})`, (an.prob - 0.5) * 2.2);
+  }
+
   return out;
+
 }
 
 /** Memoised factor values per candle index (heavy: patterns + markov). */
@@ -475,23 +542,36 @@ function factorHitRates(
   to: number,
   fv: (i: number) => Array<{ key: string; label: string; value: number }>,
 ): Record<string, { hit: number | null; n: number }> {
-  const stats: Record<string, { correct: number; n: number }> = {};
-  for (let i = Math.max(60, from); i < Math.min(to, ctx.candles.length - 1); i++) {
+  const stats: Record<string, { correct: number; n: number; wCorrect: number; wTotal: number }> = {};
+  const lo = Math.max(60, from);
+  const hi = Math.min(to, ctx.candles.length - 1);
+  const span = Math.max(1, hi - lo);
+  for (let i = lo; i < hi; i++) {
     const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
     if (actual === 0) continue;
+    // recency weighting: newest bar in the window counts ~3x the oldest
+    const recency = 0.5 + 2.5 * ((i - lo) / span);
     for (const f of fv(i)) {
       if (Math.abs(f.value) < 0.1) continue;
-      stats[f.key] ??= { correct: 0, n: 0 };
-      stats[f.key]!.n++;
-      if (Math.sign(f.value) === actual) stats[f.key]!.correct++;
+      const conf = Math.min(1, Math.abs(f.value));
+      const w = recency * (0.6 + 0.4 * conf);
+      stats[f.key] ??= { correct: 0, n: 0, wCorrect: 0, wTotal: 0 };
+      const s = stats[f.key]!;
+      s.n++;
+      s.wTotal += w;
+      if (Math.sign(f.value) === actual) {
+        s.correct++;
+        s.wCorrect += w;
+      }
     }
   }
   const out: Record<string, { hit: number | null; n: number }> = {};
   for (const [k, v] of Object.entries(stats)) {
-    out[k] = { hit: v.n >= 12 ? (v.correct / v.n) * 100 : null, n: v.n };
+    out[k] = { hit: v.n >= 12 && v.wTotal > 0 ? (v.wCorrect / v.wTotal) * 100 : null, n: v.n };
   }
   return out;
+
 }
 
 function weightFor(key: string, hit: number | null): number {
@@ -540,7 +620,13 @@ function walkForward(
   ctx: Ctx,
   fv: (i: number) => Array<{ key: string; label: string; value: number }>,
   lookback = 320,
-): { bt: Backtest; rates: Record<string, { hit: number | null; n: number }>; threshold: number } {
+): {
+  bt: Backtest;
+  rates: Record<string, { hit: number | null; n: number }>;
+  threshold: number;
+  stability: number;
+  shortAcc: number | null;
+} {
   const n = ctx.candles.length;
   const end = n - 1;
   const start = Math.max(60, end - lookback);
@@ -560,6 +646,8 @@ function walkForward(
       },
       rates,
       threshold: 0.08,
+      stability: 0,
+      shortAcc: null,
     };
   }
 
@@ -583,6 +671,15 @@ function walkForward(
   const test = evaluate(ctx, fv, trainRates, mid, end, 0.06);
   const testHigh = evaluate(ctx, fv, trainRates, mid, end, threshold);
 
+  // Second, shorter validation window (most recent third) → regime-drift check.
+  const shortFrom = end - Math.max(30, Math.floor(usable * 0.25));
+  const shortSlice = evaluate(ctx, fv, trainRates, Math.max(mid, shortFrom), end, threshold).overall;
+  const shortAcc = shortSlice.tested >= 8 ? shortSlice.accuracy : null;
+  const stability =
+    shortAcc == null || testHigh.overall.tested < 8
+      ? 0
+      : Math.max(0, 100 - Math.abs(shortAcc - testHigh.overall.accuracy) * 2.5);
+
   // Live weights use all available history (train + test).
   const rates = factorHitRates(ctx, start, end, fv);
 
@@ -596,7 +693,10 @@ function walkForward(
     },
     rates,
     threshold,
+    stability,
+    shortAcc,
   };
+
 }
 
 function evaluate(
@@ -689,7 +789,9 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
   const price = ctx.closes[i]!;
 
   const fv = makeFactorCache(ctx);
-  const { bt, rates, threshold } = walkForward(ctx, fv, 320);
+  const { bt, rates, threshold, stability, shortAcc } = walkForward(ctx, fv, 320);
+  const analog = analogProbability(ctx, i);
+
   const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
   const { score, factors, agreement } = scoreFrom(factorValues(ctx, i, htfBias), rates);
 
@@ -722,13 +824,21 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
     45,
     Math.min(92, measured == null ? raw : raw * (1 - shrink) + measured * shrink),
   );
-  // Confluence gate: strong score, ya phir high agreement + HTF alignment.
+  // Confluence gate: strong score + stability + (agreement/HTF or analog support).
   const htfAgree = htfBias == null ? false : Math.sign(htfBias) === Math.sign(score) && Math.abs(htfBias) > 0.15;
+  const analogAgree =
+    analog.prob == null ? false : Math.sign(analog.prob - 0.5) === Math.sign(score) && Math.abs(analog.prob - 0.5) > 0.08;
+  const stableEnough = stability === 0 || stability >= 55;
+  const supported = htfAgree || analogAgree;
   const advice: HeavySignal["advice"] =
     regime !== "VOLATILE" &&
-    ((strong && probability >= 56) || (agreement >= 70 && htfAgree && probability >= 57))
+    stableEnough &&
+    ((strong && probability >= 56 && supported) ||
+      (strong && probability >= 62) ||
+      (agreement >= 70 && htfAgree && probability >= 57))
       ? "TRADE"
       : "WAIT";
+
 
 
   const direction: NextCandle["direction"] = score >= 0 ? "UP" : "DOWN";
@@ -791,6 +901,10 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
     quality,
     advice,
     threshold,
+    stability: Math.round(stability),
+    shortWindowAccuracy: shortAcc,
+    analog,
+
     agreement,
     markov: mk,
     extras: {
