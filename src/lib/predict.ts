@@ -84,8 +84,11 @@ export type HeavySignal = {
   shortWindowAccuracy: number | null;
   /** historical analog (kNN) match result for the current setup */
   analog: { prob: number | null; matches: number };
+  /** self-learned logistic model (walk-forward trained) up-probability */
+  model: { prob: number | null; trained: number; regimeTuned: boolean };
   agreement: number;
   markov: { prob: number | null; samples: number };
+
 
   extras: {
     adx: number | null;
@@ -582,10 +585,69 @@ function weightFor(key: string, hit: number | null): number {
   return base * mult;
 }
 
+/* ============================================================
+   Self-learning layer: L2-regularised logistic regression trained
+   on factor vectors (recency weighted, walk-forward only).
+   ============================================================ */
+
+export type LogitModel = { w: Record<string, number>; b: number; n: number };
+
+function trainLogistic(
+  ctx: Ctx,
+  fv: (i: number) => Array<{ key: string; label: string; value: number }>,
+  from: number,
+  to: number,
+  regime?: Regime,
+  epochs = 18,
+  lr = 0.06,
+  l2 = 0.004,
+): LogitModel | null {
+  const lo = Math.max(60, from);
+  const hi = Math.min(to, ctx.candles.length - 1);
+  const span = Math.max(1, hi - lo);
+  const rows: Array<{ x: Array<{ key: string; value: number }>; y: number; w: number }> = [];
+  for (let i = lo; i < hi; i++) {
+    const nxt = ctx.candles[i + 1]!;
+    const actual = Math.sign(nxt.close - nxt.open);
+    if (actual === 0) continue;
+    if (regime && detectRegime(ctx, i) !== regime) continue;
+    rows.push({ x: fv(i), y: actual > 0 ? 1 : 0, w: 0.5 + 2.5 * ((i - lo) / span) });
+  }
+  if (rows.length < (regime ? 60 : 40)) return null;
+  const w: Record<string, number> = {};
+  let b = 0;
+  for (let e = 0; e < epochs; e++) {
+    for (const r of rows) {
+      let z = b;
+      for (const f of r.x) z += (w[f.key] ?? 0) * f.value;
+      const p = 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, z))));
+      const g = (p - r.y) * r.w;
+      b -= lr * g * 0.1;
+      for (const f of r.x) {
+        const cur = w[f.key] ?? 0;
+        w[f.key] = cur - lr * (g * f.value + l2 * cur);
+      }
+    }
+  }
+  return { w, b, n: rows.length };
+}
+
+function logisticProb(
+  vals: Array<{ key: string; value: number }>,
+  m: LogitModel | null,
+): number | null {
+  if (!m) return null;
+  let z = m.b;
+  for (const f of vals) z += (m.w[f.key] ?? 0) * f.value;
+  return 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, z))));
+}
+
 function scoreFrom(
   values: Array<{ key: string; label: string; value: number }>,
   rates: Record<string, { hit: number | null; n: number }>,
-): { score: number; factors: Factor[]; agreement: number } {
+  model: LogitModel | null = null,
+  modelWeight = 0.35,
+): { score: number; factors: Factor[]; agreement: number; modelProb: number | null } {
   let sum = 0;
   let wsum = 0;
   const factors: Factor[] = [];
@@ -602,14 +664,22 @@ function scoreFrom(
   }
   factors.sort((a, b) => Math.abs(b.value * b.weight) - Math.abs(a.value * a.weight));
   const voted = up + down || 1;
-  return {
-    score: wsum === 0 ? 0 : clamp(sum / wsum),
-    factors,
-    agreement: (Math.max(up, down) / voted) * 100,
-  };
+  const ensemble = wsum === 0 ? 0 : clamp(sum / wsum);
+  const modelProb = logisticProb(values, model);
+  // learned model ka signed score ensemble ke sath blend hota hai
+  const blended =
+    modelProb == null
+      ? ensemble
+      : clamp(ensemble * (1 - modelWeight) + clamp((modelProb - 0.5) * 3) * modelWeight);
+  let agreement = (Math.max(up, down) / voted) * 100;
+  if (modelProb != null && Math.sign(modelProb - 0.5) === Math.sign(blended)) {
+    agreement = Math.min(100, agreement + 4);
+  }
+  return { score: blended, factors, agreement, modelProb };
 }
 
 const THRESHOLDS = [0.06, 0.1, 0.14, 0.18, 0.22, 0.28, 0.34, 0.42];
+
 
 /**
  * Walk-forward evaluation: weights are tuned on the older half of the window and
@@ -626,6 +696,7 @@ function walkForward(
   threshold: number;
   stability: number;
   shortAcc: number | null;
+  model: LogitModel | null;
 } {
   const n = ctx.candles.length;
   const end = n - 1;
@@ -635,7 +706,7 @@ function walkForward(
   // Not enough history for a split → single in-sample pass.
   if (usable < 60) {
     const rates = factorHitRates(ctx, start, end, fv);
-    const slice = evaluate(ctx, fv, rates, start, end, 0.08);
+    const slice = evaluate(ctx, fv, rates, start, end, 0.08, null);
     return {
       bt: {
         ...slice.overall,
@@ -648,17 +719,20 @@ function walkForward(
       threshold: 0.08,
       stability: 0,
       shortAcc: null,
+      model: null,
     };
   }
 
   const mid = start + Math.floor(usable * 0.55);
   const trainRates = factorHitRates(ctx, start, mid, fv);
+  // Learned model trained ONLY on the train half → test slice stays out-of-sample.
+  const trainModel = trainLogistic(ctx, fv, start, mid);
 
   // Tune the threshold on the train half only.
   let threshold = 0.08;
   let bestScore = -Infinity;
   for (const t of THRESHOLDS) {
-    const r = evaluate(ctx, fv, trainRates, start, mid, t).overall;
+    const r = evaluate(ctx, fv, trainRates, start, mid, t, trainModel).overall;
     if (r.tested < 12) continue;
     // prefer accuracy, mildly reward sample size so we don't overfit a tiny slice
     const s = r.accuracy + Math.min(6, r.tested / 8);
@@ -668,20 +742,21 @@ function walkForward(
     }
   }
 
-  const test = evaluate(ctx, fv, trainRates, mid, end, 0.06);
-  const testHigh = evaluate(ctx, fv, trainRates, mid, end, threshold);
+  const test = evaluate(ctx, fv, trainRates, mid, end, 0.06, trainModel);
+  const testHigh = evaluate(ctx, fv, trainRates, mid, end, threshold, trainModel);
 
   // Second, shorter validation window (most recent third) → regime-drift check.
   const shortFrom = end - Math.max(30, Math.floor(usable * 0.25));
-  const shortSlice = evaluate(ctx, fv, trainRates, Math.max(mid, shortFrom), end, threshold).overall;
+  const shortSlice = evaluate(ctx, fv, trainRates, Math.max(mid, shortFrom), end, threshold, trainModel).overall;
   const shortAcc = shortSlice.tested >= 8 ? shortSlice.accuracy : null;
   const stability =
     shortAcc == null || testHigh.overall.tested < 8
       ? 0
       : Math.max(0, 100 - Math.abs(shortAcc - testHigh.overall.accuracy) * 2.5);
 
-  // Live weights use all available history (train + test).
+  // Live weights + live model use all available history (train + test).
   const rates = factorHitRates(ctx, start, end, fv);
+  const model = trainLogistic(ctx, fv, start, end) ?? trainModel;
 
   return {
     bt: {
@@ -695,9 +770,11 @@ function walkForward(
     threshold,
     stability,
     shortAcc,
+    model,
   };
 
 }
+
 
 function evaluate(
   ctx: Ctx,
@@ -706,6 +783,7 @@ function evaluate(
   from: number,
   to: number,
   minScore: number,
+  model: LogitModel | null = null,
 ): { overall: BacktestSlice; byRegime: Record<string, BacktestSlice>; bestStreak: number } {
   let tested = 0;
   let correct = 0;
@@ -713,7 +791,8 @@ function evaluate(
   let bestStreak = 0;
   const byRegime: Record<string, BacktestSlice> = {};
   for (let i = Math.max(60, from); i < Math.min(to, ctx.candles.length - 1); i++) {
-    const { score } = scoreFrom(fv(i), rates);
+    const { score } = scoreFrom(fv(i), rates, model);
+
     if (Math.abs(score) < minScore) continue;
     const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
@@ -789,15 +868,23 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
   const price = ctx.closes[i]!;
 
   const fv = makeFactorCache(ctx);
-  const { bt, rates, threshold, stability, shortAcc } = walkForward(ctx, fv, 320);
+  const { bt, rates, threshold, stability, shortAcc, model: learned } = walkForward(ctx, fv, 320);
   const analog = analogProbability(ctx, i);
-
-  const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
-  const { score, factors, agreement } = scoreFrom(factorValues(ctx, i, htfBias), rates);
 
   const base = analyze(candles);
   const regime = detectRegime(ctx, i);
   const mk = markovUpProbability(candles, 2);
+
+  // Regime specialist: sirf isi regime ke bars par trained second learner.
+  const regimeModel = trainLogistic(ctx, fv, Math.max(60, i - 320), i, regime);
+
+  const htfBias = htf && htf.length ? higherTimeframeBias(htf) : null;
+  const liveVals = factorValues(ctx, i, htfBias);
+  const { score, factors, agreement, modelProb: generalProb } = scoreFrom(liveVals, rates, learned);
+  const regimeProb = logisticProb(liveVals, regimeModel);
+  const modelProb =
+    generalProb == null ? regimeProb : regimeProb == null ? generalProb : generalProb * 0.6 + regimeProb * 0.4;
+
 
   const a = ctx.atr[i] ?? price * 0.001;
   const strength = Math.min(1, Math.abs(score) / 0.55);
