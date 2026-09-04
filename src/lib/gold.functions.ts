@@ -67,5 +67,38 @@ export const fetchGoldCandles = createServerFn({ method: "GET" })
         closeTime: ts[i]! * 1000,
       });
     }
-    return out.slice(-300);
+    const candles = out.slice(-300);
+
+    // Yahoo GC=F futures spot se ~40-60 USD premium par trade karta hai.
+    // Structure futures se lete hain, levels ko live spot (MT5 jaisa) par calibrate karte hain.
+    const spot = await fetchSpot();
+    const last = candles[candles.length - 1];
+    if (spot != null && last) {
+      const offset = spot - last.close;
+      if (Math.abs(offset) < 200) {
+        for (const c of candles) {
+          c.open += offset;
+          c.high += offset;
+          c.low += offset;
+          c.close += offset;
+        }
+        last.close = spot;
+        last.high = Math.max(last.high, spot);
+        last.low = Math.min(last.low, spot);
+      }
+    }
+    return candles;
   });
+
+async function fetchSpot(): Promise<number | null> {
+  try {
+    const res = await fetch("https://api.gold-api.com/price/XAU", {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { price?: number };
+    return typeof json.price === "number" && json.price > 0 ? json.price : null;
+  } catch {
+    return null;
+  }
+}
