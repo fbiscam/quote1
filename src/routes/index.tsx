@@ -301,15 +301,51 @@ function Dashboard() {
             </Badge>
           </div>
 
-          <div className="mt-5 rounded-lg bg-foreground/5 p-3 text-xs">
-            <p className="opacity-70">Backtest (last {heavy?.backtest.tested ?? 0} signals)</p>
+          {heavy && (
+            <div className="mt-4">
+              <Badge
+                variant="outline"
+                className={`tick text-sm ${heavy.advice === "TRADE" ? "border-emerald-400/60 text-emerald-400" : "border-amber-400/60 text-amber-400"}`}
+              >
+                {heavy.advice === "TRADE"
+                  ? "TRADE — signal threshold cross"
+                  : "WAIT — ye candle skip karein"}
+              </Badge>
+            </div>
+          )}
+
+          <div className="mt-5 space-y-2 rounded-lg bg-foreground/5 p-3 text-xs">
+            <p className="opacity-70">
+              {heavy?.backtest.outOfSample ? "Out-of-sample accuracy" : "In-sample accuracy"} (
+              {heavy?.backtest.tested ?? 0} signals)
+            </p>
             <p className="tick text-lg font-semibold">
               {heavy && heavy.backtest.tested > 0 ? `${heavy.backtest.accuracy.toFixed(1)}% hit rate` : "—"}
             </p>
             <p className="opacity-60">
               {heavy ? `${heavy.backtest.correct} correct / ${heavy.backtest.tested} tested` : ""}
+              {heavy && heavy.backtest.bestStreak > 0 ? ` · best streak ${heavy.backtest.bestStreak}` : ""}
             </p>
+
+            {heavy && heavy.backtest.highConf.tested > 0 && (
+              <p className="tick opacity-80">
+                High-confidence (|score| ≥ {heavy.backtest.highConf.threshold.toFixed(2)}):{" "}
+                <span className="font-semibold">{heavy.backtest.highConf.accuracy.toFixed(1)}%</span> (
+                {heavy.backtest.highConf.tested} signals)
+              </p>
+            )}
+
+            {heavy && Object.keys(heavy.backtest.byRegime).length > 0 && (
+              <div className="tick grid grid-cols-2 gap-1 pt-1 opacity-80">
+                {Object.entries(heavy.backtest.byRegime).map(([reg, s]) => (
+                  <p key={reg}>
+                    {REGIME_LABEL[reg as keyof typeof REGIME_LABEL] ?? reg}: {s.accuracy.toFixed(0)}% ({s.tested})
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
+
 
           {dataUpdatedAt > 0 && (
             <p className="tick mt-5 text-[11px] opacity-60">
