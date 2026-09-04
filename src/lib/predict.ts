@@ -542,23 +542,36 @@ function factorHitRates(
   to: number,
   fv: (i: number) => Array<{ key: string; label: string; value: number }>,
 ): Record<string, { hit: number | null; n: number }> {
-  const stats: Record<string, { correct: number; n: number }> = {};
-  for (let i = Math.max(60, from); i < Math.min(to, ctx.candles.length - 1); i++) {
+  const stats: Record<string, { correct: number; n: number; wCorrect: number; wTotal: number }> = {};
+  const lo = Math.max(60, from);
+  const hi = Math.min(to, ctx.candles.length - 1);
+  const span = Math.max(1, hi - lo);
+  for (let i = lo; i < hi; i++) {
     const nxt = ctx.candles[i + 1]!;
     const actual = Math.sign(nxt.close - nxt.open);
     if (actual === 0) continue;
+    // recency weighting: newest bar in the window counts ~3x the oldest
+    const recency = 0.5 + 2.5 * ((i - lo) / span);
     for (const f of fv(i)) {
       if (Math.abs(f.value) < 0.1) continue;
-      stats[f.key] ??= { correct: 0, n: 0 };
-      stats[f.key]!.n++;
-      if (Math.sign(f.value) === actual) stats[f.key]!.correct++;
+      const conf = Math.min(1, Math.abs(f.value));
+      const w = recency * (0.6 + 0.4 * conf);
+      stats[f.key] ??= { correct: 0, n: 0, wCorrect: 0, wTotal: 0 };
+      const s = stats[f.key]!;
+      s.n++;
+      s.wTotal += w;
+      if (Math.sign(f.value) === actual) {
+        s.correct++;
+        s.wCorrect += w;
+      }
     }
   }
   const out: Record<string, { hit: number | null; n: number }> = {};
   for (const [k, v] of Object.entries(stats)) {
-    out[k] = { hit: v.n >= 12 ? (v.correct / v.n) * 100 : null, n: v.n };
+    out[k] = { hit: v.n >= 12 && v.wTotal > 0 ? (v.wCorrect / v.wTotal) * 100 : null, n: v.n };
   }
   return out;
+
 }
 
 function weightFor(key: string, hit: number | null): number {
