@@ -243,9 +243,10 @@ function Dashboard() {
         </section>
 
         <section className="panel p-6">
-          <h2 className="text-lg font-semibold">Indicator breakdown</h2>
+          <h2 className="text-lg font-semibold">Factor engine ({heavy?.factors.length ?? 0} signals)</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Har factor apna weight deta hai; sab mila kar final ensemble score aur probability banti hai.
+            Har factor ka weight uske rolling hit rate se auto-tune hota hai — jo factor recent data me sahi raha,
+            uska asar zyada.
           </p>
 
           <dl className="tick mt-4 grid grid-cols-2 gap-3 text-xs md:grid-cols-3">
@@ -254,11 +255,17 @@ function Dashboard() {
               { k: "Stochastic", v: heavy?.stoch?.toFixed(1) ?? "—" },
               { k: "MACD hist", v: heavy?.macd.hist?.toFixed(3) ?? "—" },
               { k: "%B (Bollinger)", v: heavy?.bb.pctB?.toFixed(1) ?? "—" },
+              { k: "ADX", v: heavy?.extras.adx?.toFixed(1) ?? "—" },
+              { k: "+DI / -DI", v: heavy ? `${fmt(heavy.extras.plusDI, 1)} / ${fmt(heavy.extras.minusDI, 1)}` : "—" },
+              { k: "Williams %R", v: heavy?.extras.williamsR?.toFixed(1) ?? "—" },
+              { k: "CCI 20", v: heavy?.extras.cci?.toFixed(0) ?? "—" },
+              { k: "ROC 9", v: heavy?.extras.roc == null ? "—" : `${heavy.extras.roc.toFixed(2)}%` },
+              { k: "VWAP 20", v: fmt(heavy?.extras.vwap) },
+              { k: "Z-score", v: heavy?.extras.zscore?.toFixed(2) ?? "—" },
+              { k: "Ichimoku T/K", v: heavy ? `${fmt(heavy.extras.tenkan)} / ${fmt(heavy.extras.kijun)}` : "—" },
               { k: "ATR %", v: signal?.atrPct?.toFixed(3) ?? "—" },
-              { k: "EMA 9 / 21", v: signal ? `${fmt(signal.ema9)} / ${fmt(signal.ema21)}` : "—" },
               { k: "Support", v: fmt(heavy?.levels.support) },
               { k: "Resistance", v: fmt(heavy?.levels.resistance) },
-              { k: "BB mid", v: fmt(heavy?.bb.mid) },
             ].map((x) => (
               <div key={x.k} className="rounded-lg bg-secondary/50 p-3">
                 <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{x.k}</dt>
@@ -267,26 +274,59 @@ function Dashboard() {
             ))}
           </dl>
 
-          <ul className="mt-5 space-y-3">
-            {(signal?.reasons ?? []).map((r, idx) => (
-              <li key={idx} className="flex items-start gap-3 rounded-lg bg-secondary/50 p-3">
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "tick mt-0.5 shrink-0",
-                    r.score > 0 && "border-bull/50 text-bull",
-                    r.score < 0 && "border-bear/50 text-bear",
-                    r.score === 0 && "border-border text-muted-foreground",
-                  )}
-                >
-                  {r.score > 0 ? `+${r.score}` : r.score}
-                </Badge>
-                <div>
-                  <p className="text-sm font-medium">{r.label}</p>
-                  <p className="text-xs text-muted-foreground">{r.detail}</p>
-                </div>
-              </li>
-            ))}
+          {!!heavy?.patterns.length && (
+            <div className="mt-5">
+              <p className="text-xs uppercase tracking-widest text-muted-foreground">Detected patterns</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {heavy.patterns.map((p) => (
+                  <Badge
+                    key={p.name}
+                    variant="outline"
+                    className={cn(
+                      "tick",
+                      p.bias === "up" && "border-bull/50 text-bull",
+                      p.bias === "down" && "border-bear/50 text-bear",
+                      p.bias === "neutral" && "border-border text-muted-foreground",
+                    )}
+                    title={p.note}
+                  >
+                    {p.name}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <ul className="mt-5 space-y-2">
+            {(heavy?.factors ?? []).map((f) => {
+              const impact = f.value * f.weight;
+              const pct = Math.min(100, Math.abs(impact) * 45);
+              return (
+                <li key={f.key} className="rounded-lg bg-secondary/50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium">{f.label}</p>
+                    <span
+                      className={cn(
+                        "tick text-xs",
+                        impact > 0.05 ? "text-bull" : impact < -0.05 ? "text-bear" : "text-muted-foreground",
+                      )}
+                    >
+                      {impact > 0 ? "+" : ""}
+                      {impact.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex h-1.5 w-full overflow-hidden rounded-full bg-foreground/10">
+                    <div
+                      className={cn("h-full rounded-full", impact >= 0 ? "bg-bull" : "bg-bear")}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <p className="tick mt-1.5 text-[11px] text-muted-foreground">
+                    weight {f.weight.toFixed(2)} · hit rate {f.hitRate == null ? "n/a" : `${f.hitRate.toFixed(0)}%`}
+                  </p>
+                </li>
+              );
+            })}
             {heavy === null && !isLoading && (
               <li className="text-sm text-muted-foreground">Analysis ke liye kaafi candles nahi hain.</li>
             )}
