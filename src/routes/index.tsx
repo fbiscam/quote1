@@ -77,9 +77,10 @@ function Dashboard() {
   const htfData = results[1]?.data;
   const candles = useMemo(() => active.data ?? [], [active.data]);
   const accuracy = useMemo(
-    () => (candles.length >= 60 ? predict(candles).backtest : { accuracy: 0, tested: 0 }),
+    () => (candles.length >= 60 ? predict(candles)?.backtest ?? { accuracy: 0, tested: 0 } : { accuracy: 0, tested: 0 }),
     [candles],
   );
+
 
   const closes = candles.map((c) => c.close);
   const e9 = ema(closes, 9);
