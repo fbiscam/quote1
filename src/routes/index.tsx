@@ -248,6 +248,9 @@ function Dashboard() {
             <div className="h-full rounded-full bg-current" style={{ width: `${heavy?.next.probability ?? 0}%` }} />
           </div>
 
+          <CandleCountdown interval={interval} lastOpenTime={last?.openTime} />
+
+
           <dl className="tick mt-6 grid grid-cols-2 gap-3 text-xs text-foreground/80">
             <div>
               <dt className="opacity-60">Expected open</dt>
