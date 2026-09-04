@@ -209,6 +209,16 @@ const BASE_WEIGHTS: Record<string, number> = {
   rulebook: 1.5,
   markov: 1.2,
   htf: 2,
+  wick: 1.2,
+  divergence: 1.6,
+  squeeze: 1.4,
+  srBounce: 1.3,
+  breakout: 1.7,
+  session: 0.9,
+  exhaustion: 1.1,
+  gap: 0.7,
+  ribbon: 1.2,
+  emaStack: 1.4,
 };
 
 function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key: string; label: string; value: number }> {
@@ -318,6 +328,129 @@ function factorValues(ctx: Ctx, i: number, htfBias: number | null): Array<{ key:
   if (mk.prob != null) push("markov", `Markov sequence bias (${mk.samples})`, (mk.prob - 0.5) * 2);
 
   if (htfBias != null) push("htf", "Higher timeframe alignment", htfBias);
+
+  // ---- extra detection skills (all strictly backward-looking) ----
+
+  // 1) Wick pressure: last 3 candles ke upper/lower wicks ka imbalance
+  {
+    const w = ctx.candles.slice(Math.max(0, i - 2), i + 1);
+    let upW = 0;
+    let dnW = 0;
+    for (const x of w) {
+      upW += x.high - Math.max(x.open, x.close);
+      dnW += Math.min(x.open, x.close) - x.low;
+    }
+    const tot = upW + dnW;
+    if (tot > 0) push("wick", "Wick pressure (3)", clamp(((dnW - upW) / tot) * 1.2));
+  }
+
+  // 2) RSI divergence vs price (14 bars)
+  {
+    const back = 14;
+    const rNow = ctx.rsi[i];
+    const rPast = ctx.rsi[i - back];
+    const pPast = ctx.closes[i - back];
+    if (rNow != null && rPast != null && pPast != null) {
+      const pUp = price > pPast;
+      const rUp = rNow > rPast;
+      if (pUp && !rUp && rNow > 55) push("divergence", "Bearish RSI divergence", -0.85);
+      else if (!pUp && rUp && rNow < 45) push("divergence", "Bullish RSI divergence", 0.85);
+    }
+  }
+
+  // 3) Bollinger squeeze → breakout direction
+  {
+    const bu2 = ctx.bb.upper[i];
+    const bl2 = ctx.bb.lower[i];
+    if (bu2 != null && bl2 != null) {
+      const widths: number[] = [];
+      for (let k = Math.max(20, i - 40); k <= i; k++) {
+        const u = ctx.bb.upper[k];
+        const l = ctx.bb.lower[k];
+        if (u != null && l != null) widths.push(u - l);
+      }
+      const cur = bu2 - bl2;
+      const avgW = widths.reduce((a2, b2) => a2 + b2, 0) / (widths.length || 1) || 1;
+      if (cur < avgW * 0.75) {
+        const body = c.close - c.open;
+        push("squeeze", "BB squeeze breakout", clamp(Math.sign(body) * 0.7));
+      }
+    }
+  }
+
+  // 4) Swing S/R bounce (20 bars)
+  {
+    const win2 = ctx.candles.slice(Math.max(0, i - 20), i);
+    if (win2.length >= 10) {
+      const sup = Math.min(...win2.map((x) => x.low));
+      const res = Math.max(...win2.map((x) => x.high));
+      const rng = res - sup;
+      if (rng > 0) {
+        const posIn = (price - sup) / rng;
+        if (posIn < 0.15) push("srBounce", "Support bounce zone", 0.75);
+        else if (posIn > 0.85) push("srBounce", "Resistance rejection zone", -0.75);
+      }
+    }
+  }
+
+  // 5) Fractal breakout: prior 10-bar high/low ka break
+  {
+    const win3 = ctx.candles.slice(Math.max(0, i - 10), i);
+    if (win3.length >= 8) {
+      const hh = Math.max(...win3.map((x) => x.high));
+      const ll = Math.min(...win3.map((x) => x.low));
+      if (c.close > hh) push("breakout", "10-bar high breakout", 0.9);
+      else if (c.close < ll) push("breakout", "10-bar low breakdown", -0.9);
+    }
+  }
+
+  // 6) Session bias: London/NY hours me momentum continuation strong hota hai
+  {
+    const hourUtc = new Date(c.openTime).getUTCHours();
+    const activeSession = (hourUtc >= 7 && hourUtc < 11) || (hourUtc >= 13 && hourUtc < 17);
+    const c2 = ctx.candles[i - 2];
+    if (activeSession && c2) push("session", `Session momentum (${hourUtc}:00 UTC)`, Math.sign(c.close - c2.close) * 0.7);
+    else if (!activeSession && c2) push("session", `Quiet session fade (${hourUtc}:00 UTC)`, Math.sign(c2.close - c.close) * 0.35);
+  }
+
+  // 7) Streak exhaustion: 3+ same-direction candles → reversal pressure
+  {
+    let run = 0;
+    const dirSign = Math.sign(c.close - c.open);
+    if (dirSign !== 0) {
+      for (let k = i; k >= 0; k--) {
+        const x = ctx.candles[k]!;
+        if (Math.sign(x.close - x.open) === dirSign) run++;
+        else break;
+      }
+      if (run >= 3) push("exhaustion", `${run}-candle streak exhaustion`, -dirSign * Math.min(0.8, 0.25 * run));
+    }
+  }
+
+  // 8) Gap vs previous close
+  {
+    const p1 = ctx.candles[i - 1];
+    const a1 = ctx.atr[i];
+    if (p1 && a1 && a1 > 0) {
+      const gap = (c.open - p1.close) / a1;
+      if (Math.abs(gap) > 0.25) push("gap", "Gap fill bias", clamp(-gap * 0.6));
+    }
+  }
+
+  // 9) EMA9 slope (ribbon momentum)
+  {
+    const s0 = ctx.ema9[i];
+    const s3 = ctx.ema9[i - 3];
+    if (s0 != null && s3 != null) push("ribbon", "EMA 9 slope", clamp(((s0 - s3) / s3) * 600));
+  }
+
+  // 10) Full EMA stack alignment (9>21>50>200 = clean trend)
+  if (e9 != null && e21 != null && e50 != null && e200 != null) {
+    const upStack = e9 > e21 && e21 > e50 && e50 > e200;
+    const dnStack = e9 < e21 && e21 < e50 && e50 < e200;
+    if (upStack) push("emaStack", "EMA stack fully bullish", 0.9);
+    else if (dnStack) push("emaStack", "EMA stack fully bearish", -0.9);
+  }
 
   return out;
 }
