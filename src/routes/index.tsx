@@ -21,6 +21,16 @@ const INTERVALS = [
 
 type Interval = (typeof INTERVALS)[number]["value"];
 
+/** Higher timeframe used for trend confluence. */
+const HTF: Record<Interval, Interval> = { "1m": "15m", "5m": "1h", "15m": "1h", "1h": "1h" };
+
+const REGIME_LABEL: Record<string, string> = {
+  TREND_UP: "Uptrend (strong)",
+  TREND_DOWN: "Downtrend (strong)",
+  RANGE: "Range / sideways",
+  VOLATILE: "High volatility",
+};
+
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
