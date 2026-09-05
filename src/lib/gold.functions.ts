@@ -5,7 +5,9 @@ import type { Candle } from "./indicators";
 
 const schema = z.object({
   interval: z.enum(["1m", "5m", "15m", "1h"]),
+  asset: z.enum(["XAUUSD", "BTCUSD"]).default("XAUUSD"),
 });
+
 
 const RANGE: Record<string, string> = {
   "1m": "1d",
