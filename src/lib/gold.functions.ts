@@ -5,7 +5,9 @@ import type { Candle } from "./indicators";
 
 const schema = z.object({
   interval: z.enum(["1m", "5m", "15m", "1h"]),
+  asset: z.enum(["XAUUSD", "BTCUSD"]).default("XAUUSD"),
 });
+
 
 const RANGE: Record<string, string> = {
   "1m": "1d",
@@ -24,8 +26,18 @@ const YF_INTERVAL: Record<string, string> = {
 export const fetchGoldCandles = createServerFn({ method: "GET" })
   .inputValidator((data: unknown) => schema.parse(data))
   .handler(async ({ data }): Promise<Candle[]> => {
+    // BTC/USD — Binance BTCUSDT real-time klines (24/7, no delay)
+    if (data.asset === "BTCUSD") {
+      const btc = await fetchBinance("BTCUSDT", data.interval);
+      if (!btc) throw new Error("BTC data load nahi hua.");
+      const closed = onlyClosed(btc, data.interval);
+      if (closed.length < 60) throw new Error("BTC candles kaafi nahi hain.");
+      return closed.slice(-300);
+    }
+
     // 1) Bluesmind API (agar configured hai) — primary source
     const bm = await fetchBluesmind(data.interval);
+
     if (bm) {
       const closed = onlyClosed(bm, data.interval);
       if (closed.length >= 60) return closed.slice(-300);
@@ -33,7 +45,7 @@ export const fetchGoldCandles = createServerFn({ method: "GET" })
 
     // 2) Real-time gold proxy: PAXG/USDT (1 PAXG = 1 oz gold, 24/7 live, no delay).
     //    Yahoo GC=F ~10 min delayed hota hai, is liye ye primary hai.
-    const px = await fetchPaxg(data.interval);
+    const px = await fetchBinance("PAXGUSDT", data.interval);
     if (px) {
       const closed = onlyClosed(px, data.interval);
       if (closed.length >= 60) return calibrate(closed.slice(-300), await fetchSpot());
@@ -109,10 +121,10 @@ function calibrate(candles: Candle[], spot: number | null): Candle[] {
 }
 
 /** PAXG/USDT klines — real-time gold ounce proxy. */
-async function fetchPaxg(interval: string): Promise<Candle[] | null> {
+async function fetchBinance(symbol: string, interval: string): Promise<Candle[] | null> {
   try {
     const res = await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${interval}&limit=500`,
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`,
       { headers: { "User-Agent": "Mozilla/5.0" } },
     );
     if (!res.ok) return null;
@@ -154,13 +166,30 @@ function onlyClosed(rows: Candle[], interval: string): Candle[] {
   return rows.filter((c) => c.openTime % ms === 0 && c.openTime + ms <= now);
 }
 
-/** Live spot price (display ke liye) — MT5 jaisa XAU/USD price. */
-export const fetchGoldSpot = createServerFn({ method: "GET" }).handler(
-  async (): Promise<{ price: number | null; at: number }> => ({
-    price: await fetchSpot(),
+/** Live spot price (display ke liye) — XAU/USD (MT5 jaisa) ya BTC/USD. */
+export const fetchGoldSpot = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) =>
+    z.object({ asset: z.enum(["XAUUSD", "BTCUSD"]).default("XAUUSD") }).parse(data ?? {}),
+  )
+  .handler(async ({ data }): Promise<{ price: number | null; at: number }> => ({
+    price: data.asset === "BTCUSD" ? await fetchBinancePrice("BTCUSDT") : await fetchSpot(),
     at: Date.now(),
-  }),
-);
+  }));
+
+async function fetchBinancePrice(symbol: string): Promise<number | null> {
+  try {
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { price?: string };
+    const n = Number(json.price);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 
 async function fetchSpot(): Promise<number | null> {
   try {

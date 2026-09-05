@@ -991,6 +991,12 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
     stability: Math.round(stability),
     shortWindowAccuracy: shortAcc,
     analog,
+    model: {
+      prob: modelProb,
+      trained: learned?.n ?? 0,
+      regimeTuned: regimeModel != null,
+    },
+
 
     agreement,
     markov: mk,
