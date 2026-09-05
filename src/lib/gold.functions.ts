@@ -26,8 +26,18 @@ const YF_INTERVAL: Record<string, string> = {
 export const fetchGoldCandles = createServerFn({ method: "GET" })
   .inputValidator((data: unknown) => schema.parse(data))
   .handler(async ({ data }): Promise<Candle[]> => {
+    // BTC/USD — Binance BTCUSDT real-time klines (24/7, no delay)
+    if (data.asset === "BTCUSD") {
+      const btc = await fetchBinance("BTCUSDT", data.interval);
+      if (!btc) throw new Error("BTC data load nahi hua.");
+      const closed = onlyClosed(btc, data.interval);
+      if (closed.length < 60) throw new Error("BTC candles kaafi nahi hain.");
+      return closed.slice(-300);
+    }
+
     // 1) Bluesmind API (agar configured hai) — primary source
     const bm = await fetchBluesmind(data.interval);
+
     if (bm) {
       const closed = onlyClosed(bm, data.interval);
       if (closed.length >= 60) return closed.slice(-300);
