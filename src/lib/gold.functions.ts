@@ -45,7 +45,7 @@ export const fetchGoldCandles = createServerFn({ method: "GET" })
 
     // 2) Real-time gold proxy: PAXG/USDT (1 PAXG = 1 oz gold, 24/7 live, no delay).
     //    Yahoo GC=F ~10 min delayed hota hai, is liye ye primary hai.
-    const px = await fetchPaxg(data.interval);
+    const px = await fetchBinance("PAXGUSDT", data.interval);
     if (px) {
       const closed = onlyClosed(px, data.interval);
       if (closed.length >= 60) return calibrate(closed.slice(-300), await fetchSpot());
@@ -121,10 +121,10 @@ function calibrate(candles: Candle[], spot: number | null): Candle[] {
 }
 
 /** PAXG/USDT klines — real-time gold ounce proxy. */
-async function fetchPaxg(interval: string): Promise<Candle[] | null> {
+async function fetchBinance(symbol: string, interval: string): Promise<Candle[] | null> {
   try {
     const res = await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${interval}&limit=500`,
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`,
       { headers: { "User-Agent": "Mozilla/5.0" } },
     );
     if (!res.ok) return null;
