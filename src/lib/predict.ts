@@ -993,7 +993,7 @@ export function predict(candles: Candle[], htf?: Candle[]): HeavySignal | null {
     analog,
     model: {
       prob: modelProb,
-      trained: learned?.trained ?? 0,
+      trained: learned?.n ?? 0,
       regimeTuned: regimeModel != null,
     },
 
