@@ -166,13 +166,30 @@ function onlyClosed(rows: Candle[], interval: string): Candle[] {
   return rows.filter((c) => c.openTime % ms === 0 && c.openTime + ms <= now);
 }
 
-/** Live spot price (display ke liye) — MT5 jaisa XAU/USD price. */
-export const fetchGoldSpot = createServerFn({ method: "GET" }).handler(
-  async (): Promise<{ price: number | null; at: number }> => ({
-    price: await fetchSpot(),
+/** Live spot price (display ke liye) — XAU/USD (MT5 jaisa) ya BTC/USD. */
+export const fetchGoldSpot = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) =>
+    z.object({ asset: z.enum(["XAUUSD", "BTCUSD"]).default("XAUUSD") }).parse(data ?? {}),
+  )
+  .handler(async ({ data }): Promise<{ price: number | null; at: number }> => ({
+    price: data.asset === "BTCUSD" ? await fetchBinancePrice("BTCUSDT") : await fetchSpot(),
     at: Date.now(),
-  }),
-);
+  }));
+
+async function fetchBinancePrice(symbol: string): Promise<number | null> {
+  try {
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { price?: string };
+    const n = Number(json.price);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 
 async function fetchSpot(): Promise<number | null> {
   try {
